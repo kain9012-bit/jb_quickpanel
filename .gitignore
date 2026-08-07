@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+build_packages/
+exe버전관리/
+*.exe
+*.zip
+hwp_helper_ui_settings.json

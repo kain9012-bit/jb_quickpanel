@@ -1,0 +1,330 @@
+{
+  "meta": {
+    "name": "전북교육 한글 서식도우미",
+    "version": "1.1",
+    "updated": "2026-02-17"
+  },
+  "settings": {
+    "always_on_top": true,
+    "symbols_root": "symbols",
+    "card_w": 230,
+    "card_h": 170
+  },
+  "blocks": [
+    {
+      "id": "b01",
+      "title": "제목박스",
+      "file": "blocks_hwp/제목박스.hwp",
+      "thumb": "thumbs/제목박스.png"
+    },
+    {
+      "id": "b02",
+      "title": "붙임박스",
+      "file": "blocks_hwp/붙임박스.hwp",
+      "thumb": "thumbs/붙임박스.png"
+    },
+    {
+      "id": "b03",
+      "title": "표박스",
+      "file": "blocks_hwp/표박스.hwp",
+      "thumb": "thumbs/표박스.png"
+    },
+    {
+      "id": "b04",
+      "title": "소제목박스",
+      "file": "blocks_hwp/소제목박스.hwp",
+      "thumb": "thumbs/소제목박스.png"
+    },
+    {
+      "id": "b05",
+      "title": "참고박스",
+      "file": "blocks_hwp/참고박스.hwp",
+      "thumb": "thumbs/참고박스.png"
+    },
+    {
+      "id": "b06",
+      "title": "3단계절차박스",
+      "file": "blocks_hwp/3단계절차박스.hwp",
+      "thumb": "thumbs/3단계절차박스.png"
+    },
+    {
+      "id": "b07",
+      "title": "4단계절차박스",
+      "file": "blocks_hwp/4단계절차박스.hwp",
+      "thumb": "thumbs/4단계절차박스.png"
+    }
+  ],
+  "forms": [
+    {
+      "id": "f01",
+      "title": "기본보고서",
+      "file": "forms_hwp/기본보고서.hwp",
+      "thumb": "forms_thumbs/기본보고서.png"
+    },
+    {
+      "id": "f02",
+      "title": "보도자료",
+      "file": "forms_hwp/보도자료.hwp",
+      "thumb": "forms_thumbs/보도자료.png"
+    },
+    {
+      "id": "f03",
+      "title": "전략회의자료",
+      "file": "forms_hwp/전략회의자료.hwp",
+      "thumb": "forms_thumbs/전략회의자료.png"
+    },
+    {
+      "id": "f04",
+      "title": "주요업무 정책기획과",
+      "file": "forms_hwp/주요업무 정책기획과.hwp",
+      "thumb": "forms_thumbs/주요업무 정책기획과.png"
+    }
+  ],
+  "symbols": {
+    "기본": [
+      "□",
+      "○",
+      "△",
+      "▲",
+      "■",
+      "●",
+      "→",
+      "←",
+      "↑",
+      "↓",
+      "※",
+      "·",
+      "•",
+      "☎",
+      "✓",
+      "✔",
+      "✕",
+      "×",
+      "~",
+      "°",
+      "℃",
+      "㎡",
+      "㎢",
+      "㎞",
+      "㎜",
+      "㎝",
+      "m",
+      "km",
+      "min",
+      "h"
+    ],
+    "괄호": [
+      "「",
+      "」",
+      "『",
+      "』",
+      "〈",
+      "〉",
+      "《",
+      "》",
+      "【",
+      "】",
+      "〔",
+      "〕",
+      "〖",
+      "〗"
+    ],
+    "원문자": [
+      "①",
+      "②",
+      "③",
+      "④",
+      "⑤",
+      "⑥",
+      "⑦",
+      "⑧",
+      "⑨",
+      "⑩",
+      "⑪",
+      "⑫",
+      "⑬",
+      "⑭",
+      "⑮",
+      "⑯",
+      "⑰",
+      "⑱",
+      "⑲",
+      "⑳"
+    ],
+    "원문자-검정": [
+      "❶",
+      "❷",
+      "❸",
+      "❹",
+      "❺",
+      "❻",
+      "❼",
+      "❽",
+      "❾",
+      "❿"
+    ],
+    "로마숫자": [
+      "Ⅰ",
+      "Ⅱ",
+      "Ⅲ",
+      "Ⅳ",
+      "Ⅴ",
+      "Ⅵ",
+      "Ⅶ",
+      "Ⅷ",
+      "Ⅸ",
+      "Ⅹ",
+      "Ⅺ",
+      "Ⅻ"
+    ],
+    "체크/표식": [
+      "○",
+      "●",
+      "◎",
+      "◇",
+      "◆",
+      "☆",
+      "★",
+      "✔",
+      "✓",
+      "☑",
+      "☐",
+      "✗",
+      "✕",
+      "△",
+      "▲",
+      "▽",
+      "▼"
+    ],
+    "화살표": [
+      "→",
+      "←",
+      "↑",
+      "↓",
+      "↔",
+      "↕",
+      "⇒",
+      "⇐",
+      "⇑",
+      "⇓",
+      "⇔",
+      "⇕",
+      "➔",
+      "➜",
+      "➝",
+      "➞",
+      "↗",
+      "↘",
+      "↙",
+      "↖"
+    ],
+    "수학/기호": [
+      "±",
+      "≠",
+      "≈",
+      "≡",
+      "≤",
+      "≥",
+      "∞",
+      "∴",
+      "∵",
+      "∑",
+      "√",
+      "∫",
+      "∝",
+      "∠",
+      "∩",
+      "∪",
+      "∈",
+      "∉"
+    ],
+    "단위": [
+      "℃",
+      "℉",
+      "㎜",
+      "㎝",
+      "㎞",
+      "㎡",
+      "㎢",
+      "㏈",
+      "㎏",
+      "g",
+      "mg",
+      "mL",
+      "L",
+      "Hz",
+      "kHz",
+      "MHz",
+      "GB",
+      "TB",
+      "%",
+      "‰",
+      "‱"
+    ]
+  },
+  "page_thumbs_root": "page_thumbs",
+  "page_items": [
+    {
+      "id": "basic_report",
+      "title": "기본 보고서 편집용지",
+      "thumb": "기본_보고서.png"
+    }
+  ],
+  "table_tools": [
+    {
+      "title": "기본선 변경(얇게)",
+      "action_id": "기본선변경하기",
+      "thumb": "table_thumbs/01_basic_thin.png"
+    },
+    {
+      "title": "전체 바깥선 굵게",
+      "action_id": "전체바깥선굵게변경하기",
+      "thumb": "table_thumbs/02_outer_bold.png"
+    },
+    {
+      "title": "위쪽 바깥선 굵게",
+      "action_id": "위쪽바깥선굵게변경하기",
+      "thumb": "table_thumbs/03_top_bold.png"
+    },
+    {
+      "title": "아래쪽 바깥선 굵게",
+      "action_id": "아래쪽바깥선굵게변경하기",
+      "thumb": "table_thumbs/04_bottom_bold.png"
+    },
+    {
+      "title": "아래쪽 바깥선 이중선",
+      "action_id": "아래쪽바깥선이중선변경하기",
+      "thumb": "table_thumbs/05_bottom_double.png"
+    },
+    {
+      "title": "왼쪽 바깥선 없애기",
+      "action_id": "왼쪽바깥선없애기",
+      "thumb": "table_thumbs/06_left_none.png"
+    },
+    {
+      "title": "오른쪽 바깥선 없애기",
+      "action_id": "오른쪽바깥선없애기",
+      "thumb": "table_thumbs/07_right_none.png"
+    },
+    {
+      "title": "표 전체 선 없애기",
+      "action_id": "표전체선없애기",
+      "thumb": "table_thumbs/08_all_none.png"
+    },
+    {
+      "title": "하늘색 배경 채우기",
+      "action_id": "하늘색배경채우기",
+      "thumb": "table_thumbs/09_fill_sky.png"
+    },
+    {
+      "title": "연한 노랑 배경 채우기",
+      "action_id": "연한노랑색배경채우기",
+      "thumb": "table_thumbs/10_fill_yellow.png"
+    },
+    {
+      "title": "빨간색 강조선 넣기",
+      "action_id": "빨간색강조선넣기",
+      "thumb": "table_thumbs/11_red_border.png"
+    }
+  ]
+}
