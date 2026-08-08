@@ -1,10 +1,26 @@
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
-build/
-dist/
-build_packages/
-exe��������/
+.venv/
+venv/
+
+/build/
+/dist/
+/build_packages/
+/release/
+/exe버전관리/
+
 *.exe
 *.zip
+*.log
 hwp_helper_ui_settings.json
+/ui_preview_ctk.png
+
+# Keep version archives locally, but publish only the current source tree.
+/app(*).py
+/src/jb_quickpanel_v*/
+/전북교육_한글_서식도우미_v*.spec
+!/전북교육_한글_서식도우미_v3.4.spec
+
+# Legacy local copy. Install pywin32 from requirements instead.
+/vendor/

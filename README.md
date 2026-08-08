@@ -4,21 +4,30 @@
 
 ## 현재 버전
 
-- 최신 소스 진입 파일: `app(v3.4).py`
+- 최신 소스 진입 파일: `app.py`
 - 창 제목 표시: `전북교육 한글 서식도우미 v3.4`
 - 배포 EXE 이름: `전북교육_한글_서식도우미_v3.4.exe`
 - Windows 검색 이름: `전북교육 한글 서식도우미 (v3.4)`
 - 단일 EXE 실행 시 초기 준비 상태를 보여주는 스플래시 화면 표시
-- 최신 배포 파일 위치: `exe버전관리`
+- 배포 파일: [GitHub Releases](https://github.com/kain9012-bit/jb_quickpanel/releases)
 - 업데이트 내역: `CHANGELOG.md`
 
 ## 빠른 실행
 
-프로젝트 폴더에서 실행합니다.
+### 배포본 사용
+
+[GitHub Releases](https://github.com/kain9012-bit/jb_quickpanel/releases)에서 최신 EXE를 내려받아 실행합니다.
+
+### 소스 실행
+
+Windows에 Python 3.12가 설치된 상태에서 다음 명령을 실행합니다.
 
 ```powershell
-cd "C:\work\jb_quickpanel"
-python "app(v3.4).py"
+git clone https://github.com/kain9012-bit/jb_quickpanel.git
+cd jb_quickpanel
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe app.py
 ```
 
 한글 문서에 적용하는 기능은 한글을 먼저 실행하고 문서를 열어둔 상태에서 사용합니다.
@@ -70,7 +79,7 @@ python "app(v3.4).py"
 - K-에듀파인 기안창에 적용할 때는 기안창을 먼저 열고 본문 입력 영역에 커서를 둡니다.
 - `항상 위로 표시`를 켜면 한글 위에 도구 창을 띄운 채 작업할 수 있습니다.
 - 항상 위 상태에서는 버튼·탭 클릭이 한글 포커스를 유지하며, 셀 정리 입력칸처럼 키보드 입력이 필요한 곳을 클릭할 때만 서식도우미가 활성화됩니다.
-- 소스 실행 기준으로 `vendor/pywin32` 폴더가 있으면 pywin32를 별도 설치하지 않아도 됩니다.
+- 소스로 실행할 때는 `requirements.txt`의 `pywin32`와 `Pillow`를 먼저 설치합니다.
 
 ## 주요 사용법
 
@@ -184,57 +193,36 @@ K-에듀파인 기안창 모드에서는 자간 정리 박스가 숨겨집니다
 - 업데이트 확인에 실패해도 프로그램 실행과 한글 문서 작업은 계속할 수 있습니다.
 - 업데이트 안내 연결 정보는 아직 비워 두었으며, 고유번호를 설정하기 전까지는 설정 창에 `업데이트 정보 미설정`으로 표시됩니다.
 
-## v2.2 이후 구조
+## 저장소 구조
 
-v2.2부터는 기능을 추가하기 쉬운 구조로 소스가 분리되었습니다. 기존 한글 문서 편집 동작은 유지하면서 설정·튜토리얼·Windows 통합과 공통 UI 체계를 보강했고, 수정 위치를 찾기 쉽도록 역할별로 나누었습니다.
+main 브랜치에는 현재 배포 버전의 소스와 실행에 필요한 자료만 관리합니다. 과거 버전의 변경 내용은 `CHANGELOG.md`에서 확인하고, 배포본은 GitHub Releases와 버전 태그로 관리합니다.
 
 ```text
 jb_quickpanel/
-  app(v3.4).py                         # 최신 실행 진입 파일
-  app(v3.3).py                         # v3.3 보존 실행 파일
-  app(v3.2).py                         # v3.2 보존 실행 파일
-  app(v3.1).py                         # v3.1 보존 실행 파일
-  app(v3.0).py                         # v3.0 보존 실행 파일
-  app(v2.9).py                         # v2.9 보존 실행 파일
-  app(v2.8).py                         # v2.8 보존 실행 파일
-  app(v2.7).py                         # v2.7 보존 실행 파일
-  app(v2.6).py                         # v2.6 보존 실행 파일
-  app(v2.5).py                         # v2.5 보존 실행 파일
-  app(v2.4).py                         # v2.4 보존 실행 파일
-  app(v2.3).py                         # v2.3 보존 실행 파일
-  app(v2.2).py                         # v2.2 보존 실행 파일
-  src/jb_quickpanel/                    # v3.4 소스 (최신)
-  src/jb_quickpanel_v33/                # v3.3 보존 소스
-  src/jb_quickpanel_v32/                # v3.2 보존 소스
-  src/jb_quickpanel_v31/                # v3.1 보존 소스
-  src/jb_quickpanel_v30/                # v3.0 보존 소스
-  src/jb_quickpanel_v29/                # v2.9 보존 소스
-  src/jb_quickpanel_v28/                # v2.8 보존 소스
-  src/jb_quickpanel_v27/                # v2.7 보존 소스
-  src/jb_quickpanel_v26/                # v2.6 보존 소스
-  src/jb_quickpanel_v25/                # v2.5 보존 소스
-  src/jb_quickpanel_v24/                # v2.4 보존 소스
-  src/jb_quickpanel_v23/                # v2.3 보존 소스
-  src/jb_quickpanel_v22/                # v2.2 보존 소스
-    core/
-      runtime.py                       # 공통 import, 경로, 설정, 클립보드, 한글 창 탐색 보조
-    bridges/
-      hwp_bridge.py                    # 일반 한글 COM 조작
-      wxs_bridge.py                    # K-에듀파인 기안창 조작
-    features/
-      auto_format.py                   # 보고서 자동 서식/프롬프트 처리
-      untagged_report.py                # 태그 없는 문서 계층·표 분석
-      cell_text.py                     # 셀 텍스트 정리 함수
-      registry.py                      # 기능 이름, 버튼, 모드 표시 정책 등록표
-      global_hotkeys.py                # 전역 단축키 검증, 기능 목록, Windows 등록부
-    ui/
-      app_window.py                    # Tkinter 화면, 탭, 버튼 이벤트
-      hotkey_dialog.py                 # 단축키 검색·지정·해제 관리창
-    services/
-      app_config.py                    # 프로그램 설정 저장
-      user_content.py                  # 내 서식·양식·편집용지 보관
-  vendor/
-    pywin32/                           # 소스 실행/빌드용 pywin32 보조 패키지
+  app.py                                 # 공개 소스 실행 진입점
+  src/jb_quickpanel/
+    core/                                # 공통 런타임과 단일 실행 관리
+    bridges/                             # 일반 한글·K-에듀파인 연결
+    features/                            # 자동 서식, 표·셀·단축키 기능
+    services/                            # 설정, 업데이트, 사용자 자료
+    ui/                                  # Tkinter 화면
+    vendor/olefile/                      # HWP 내장 미리보기 읽기
+  assets/                                # 아이콘과 스플래시
+  blocks_hwp/                            # 기본 서식 조각
+  forms_hwp/                             # 기본 양식
+  thumbs/                                # 서식 미리보기
+  forms_thumbs/                          # 양식 미리보기
+  page_thumbs/                           # 편집용지 미리보기
+  symbols/                               # 심볼 이미지
+  table_thumbs/                          # 표 작업 아이콘
+  config/                                # 기본 설정 데이터
+  tests/                                 # 자동 테스트
+  requirements.txt                      # 실행 의존성
+  requirements-build.txt                # 빌드 의존성
+  build_release.ps1                     # 검사·빌드·배포 파일 생성
+  전북교육_한글_서식도우미_v3.4.spec    # PyInstaller 설정
+  README.md
+  CHANGELOG.md
 ```
 
 ## 수정 원칙
@@ -247,36 +235,52 @@ jb_quickpanel/
 - 리소스 경로, 클립보드, 공통 유틸은 `core/runtime.py`에 둡니다.
 - 기능을 바꾸면 `CHANGELOG.md`에 버전별 변경 내용을 남깁니다.
 
-## 개발 실행
+## 개발 환경
 
-개발 중에는 프로젝트 폴더에서 아래 파일을 실행합니다.
+Python 3.12 가상환경을 권장합니다.
 
 ```powershell
-python "app(v3.4).py"
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
 ```
 
-한글 자동화 기능은 Windows에서 한글이 실행 중일 때 동작합니다. 일부 기능은 `pywin32`, `Pillow`, `tkinter`가 필요합니다.
+소스 실행:
+
+```powershell
+.\.venv\Scripts\python.exe app.py
+```
+
+전체 테스트:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+한글 자동화 기능은 Windows에서 한글이 실행 중일 때 동작합니다. `tkinter`는 Python 설치 프로그램에서 함께 설치해야 합니다.
 
 ## 빌드
 
-배포용 exe는 `build_release.ps1`을 사용하는 것을 권장합니다.
+빌드 전 검사만 실행:
 
 ```powershell
-.\build_release.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\build_release.ps1" -Version v3.4 -CheckOnly
 ```
 
-직접 빌드할 때는 PyInstaller spec 파일을 기준으로 만듭니다.
+단일 EXE와 ZIP 생성:
 
 ```powershell
-python -m PyInstaller --clean --noconfirm "전북교육_한글_서식도우미_v3.4.spec"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\build_release.ps1" -Version v3.4
 ```
+
+스크립트는 `.venv`가 있으면 해당 Python을 우선 사용하고, 없으면 PATH의 `python.exe`를 사용합니다. 결과물은 Git 추적에서 제외된 `release` 폴더에 생성됩니다.
 
 빌드 후 확인할 항목:
 
-- exe가 바로 종료되지 않는지 확인
+- EXE가 바로 종료되지 않는지 확인
 - `서식`, `편집도구`, `문자표`, `심볼`, `양식`, `편집용지`, `설정` 탭이 정상 표시되는지 확인
-- 일반 한글 모드와 K-에듀파인 기안창 모드의 표시 기능이 구분되는지 확인
-- `exe버전관리` 폴더에 exe와 zip을 보관
+- 일반 한글 모드와 K-에듀파인 기안창 모드의 기능이 구분되는지 확인
+- GitHub Releases에 EXE와 ZIP 게시
 - `CHANGELOG.md` 갱신
 
 ## 자료 폴더

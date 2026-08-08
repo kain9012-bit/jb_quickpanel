@@ -1,68 +1,37 @@
 param(
     [string]$Version = "v3.4",
+    [string]$PythonExe = "",
     [switch]$CheckOnly,
-    [switch]$SkipSmokeTest
+    [switch]$RunSmokeTest
 )
 
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PythonExe = "C:\Users\kain9\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
-$PyInstallerPackages = "C:\work\pdf_merge_tool\.venv\Lib\site-packages"
-$TkRoot = "C:\work\tk_runtime\tcl"
-$VendorPywin32 = Join-Path $Root "vendor\pywin32"
-$SpecPath = (Get-ChildItem -LiteralPath $Root -Filter "*_$Version.spec" | Select-Object -First 1).FullName
-$SplashPath = $null
-if ($SpecPath) {
-    $SplashLine = Select-String -LiteralPath $SpecPath -Pattern "assets/splash/[^']+\.png" | Select-Object -First 1
-    if ($SplashLine) {
-        $SplashRelative = [regex]::Match($SplashLine.Line, "assets/splash/[^']+\.png").Value
-        $SplashPath = Join-Path $Root ($SplashRelative -replace "/", "\")
-    }
-}
-$AppPath = Join-Path $Root "app($Version).py"
-$SourcePackage = if ($Version -eq "v2.2") {
-    Join-Path $Root "src\jb_quickpanel_v22"
-} elseif ($Version -eq "v2.3") {
-    Join-Path $Root "src\jb_quickpanel_v23"
-} elseif ($Version -eq "v2.4") {
-    Join-Path $Root "src\jb_quickpanel_v24"
-} elseif ($Version -eq "v2.5") {
-    Join-Path $Root "src\jb_quickpanel_v25"
-} elseif ($Version -eq "v2.6") {
-    Join-Path $Root "src\jb_quickpanel_v26"
-} elseif ($Version -eq "v2.7") {
-    Join-Path $Root "src\jb_quickpanel_v27"
-} elseif ($Version -eq "v2.8") {
-    Join-Path $Root "src\jb_quickpanel_v28"
-} elseif ($Version -eq "v2.9") {
-    Join-Path $Root "src\jb_quickpanel_v29"
-} elseif ($Version -eq "v3.0") {
-    Join-Path $Root "src\jb_quickpanel_v30"
-} elseif ($Version -eq "v3.1") {
-    Join-Path $Root "src\jb_quickpanel_v31"
-} elseif ($Version -eq "v3.2") {
-    Join-Path $Root "src\jb_quickpanel_v32"
-} elseif ($Version -eq "v3.3") {
-    Join-Path $Root "src\jb_quickpanel_v33"
-} else {
-    Join-Path $Root "src\jb_quickpanel"
-}
-$ArchiveDir = (Get-ChildItem -LiteralPath $Root -Directory -Filter "exe*" | Select-Object -First 1).FullName
+$AppPath = Join-Path $Root "app.py"
+$SourcePackage = Join-Path $Root "src\jb_quickpanel"
+$SpecPath = (Get-ChildItem -LiteralPath $Root -File -Filter "*_$Version.spec" | Select-Object -First 1).FullName
+$ReleaseDir = Join-Path $Root "release"
 $DistExe = $null
-$ArchiveExe = $null
-$ArchiveZip = $null
 
 function Assert-PathExists {
     param(
         [string]$Path,
         [string]$Label
     )
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        throw "$Label path is empty."
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        throw "$Label not found: $Path"
     }
-    if (-not (Test-Path -LiteralPath $Path)) {
-        throw "$Label path not found: $Path"
+}
+
+function Invoke-Checked {
+    param(
+        [scriptblock]$Command,
+        [string]$FailureMessage
+    )
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FailureMessage (exit code: $LASTEXITCODE)"
     }
 }
 
@@ -72,61 +41,58 @@ function Write-Step {
     Write-Host "== $Message"
 }
 
+if ([string]::IsNullOrWhiteSpace($PythonExe)) {
+    $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $VenvPython) {
+        $PythonExe = $VenvPython
+    } else {
+        $PythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+        if (-not $PythonCommand) {
+            throw "Python not found. Install Python 3.12 or create .venv first."
+        }
+        $PythonExe = $PythonCommand.Source
+    }
+}
+
 Set-Location -LiteralPath $Root
 
 Write-Step "Path check"
 Assert-PathExists $PythonExe "Python"
-Assert-PathExists $PyInstallerPackages "PyInstaller packages"
-Assert-PathExists (Join-Path $TkRoot "tcl8.6") "Tcl"
-Assert-PathExists (Join-Path $TkRoot "tk8.6") "Tk"
-Assert-PathExists $VendorPywin32 "pywin32 vendor"
-Assert-PathExists (Join-Path $VendorPywin32 "pywin32_system32\pythoncom312.dll") "pythoncom312.dll"
-Assert-PathExists (Join-Path $VendorPywin32 "pywin32_system32\pywintypes312.dll") "pywintypes312.dll"
-Assert-PathExists $SpecPath "Spec"
-Assert-PathExists $AppPath "app"
-Assert-PathExists $SourcePackage "source package"
-Assert-PathExists $ArchiveDir "Archive directory"
-if ($SplashPath) {
-    Assert-PathExists $SplashPath "Splash image"
+Assert-PathExists $AppPath "Application entry point"
+Assert-PathExists $SourcePackage "Source package"
+Assert-PathExists $SpecPath "PyInstaller spec"
+Assert-PathExists (Join-Path $Root "assets\splash\app_splash_v3.4.png") "Splash image"
+Assert-PathExists (Join-Path $Root "assets\icons\app_icon.ico") "Application icon"
+
+$VersionSource = Join-Path $SourcePackage "ui\app_window.py"
+$VersionLine = Select-String -LiteralPath $VersionSource -Pattern 'APP_VERSION\s*=\s*"([^"]+)"' | Select-Object -First 1
+if (-not $VersionLine) {
+    throw "APP_VERSION was not found in $VersionSource"
+}
+$CodeVersion = [regex]::Match($VersionLine.Line, 'APP_VERSION\s*=\s*"([^"]+)"').Groups[1].Value
+if ($CodeVersion -ne $Version) {
+    throw "Version mismatch: build=$Version, source=$CodeVersion"
 }
 
-$env:TCL_LIBRARY = Join-Path $TkRoot "tcl8.6"
-$env:TK_LIBRARY = Join-Path $TkRoot "tk8.6"
-$env:PYTHONPATH = @(
-    $PyInstallerPackages,
-    $VendorPywin32,
-    (Join-Path $VendorPywin32 "win32"),
-    (Join-Path $VendorPywin32 "win32\lib"),
-    (Join-Path $VendorPywin32 "pywin32_system32")
-) -join ";"
-$env:PATH = (Join-Path $VendorPywin32 "pywin32_system32") + ";" + $env:PATH
+Write-Step "Dependency check"
+& $PythonExe -c "import tkinter, PIL, pythoncom, win32com.client, PyInstaller; print('dependencies ok')"
+if ($LASTEXITCODE -ne 0) {
+    throw "Build dependencies are missing. Run: $PythonExe -m pip install -r requirements-build.txt"
+}
 
 Write-Step "Syntax check"
-$SyntaxFiles = @(
-    $AppPath,
-    (Join-Path $SourcePackage "core\runtime.py"),
-    (Join-Path $SourcePackage "features\registry.py"),
-    (Join-Path $SourcePackage "features\cell_text.py"),
-    (Join-Path $SourcePackage "features\auto_format.py"),
-    (Join-Path $SourcePackage "bridges\hwp_bridge.py"),
-    (Join-Path $SourcePackage "bridges\wxs_bridge.py"),
-    (Join-Path $SourcePackage "ui\app_window.py"),
-    (Join-Path $SourcePackage "services\app_config.py")
-)
-$OptionalSyntaxFiles = @(
-    (Join-Path $SourcePackage "features\untagged_report.py"),
-    (Join-Path $SourcePackage "features\document_preview.py"),
-    (Join-Path $SourcePackage "features\cell_images.py"),
-    (Join-Path $SourcePackage "features\global_hotkeys.py"),
-    (Join-Path $SourcePackage "ui\hotkey_dialog.py"),
-    (Join-Path $SourcePackage "services\user_content.py")
-)
-foreach ($OptionalFile in $OptionalSyntaxFiles) {
-    if (Test-Path -LiteralPath $OptionalFile) {
-        $SyntaxFiles += $OptionalFile
-    }
-}
+$SyntaxFiles = @($AppPath)
+$SyntaxFiles += Get-ChildItem -LiteralPath $SourcePackage -Recurse -File -Filter "*.py" | Select-Object -ExpandProperty FullName
 & $PythonExe -m py_compile $SyntaxFiles
+if ($LASTEXITCODE -ne 0) {
+    throw "Python syntax check failed."
+}
+
+Write-Step "Unit tests"
+& $PythonExe -m unittest discover -s tests
+if ($LASTEXITCODE -ne 0) {
+    throw "Unit tests failed."
+}
 
 if ($CheckOnly) {
     Write-Step "Check complete"
@@ -135,28 +101,34 @@ if ($CheckOnly) {
 }
 
 Write-Step "PyInstaller build"
-& $PythonExe -m PyInstaller --clean --noconfirm $SpecPath
-
-$DistExe = (Get-ChildItem -LiteralPath (Join-Path $Root "dist") -Filter "*_$Version.exe" | Select-Object -First 1).FullName
-Assert-PathExists $DistExe "Built exe"
-
-if (-not $SkipSmokeTest) {
-    Write-Step "Smoke test"
-    $process = Start-Process -FilePath $DistExe -PassThru
-    Start-Sleep -Seconds 5
-    if ($process.HasExited) {
-        throw "exe exited immediately. Exit code: $($process.ExitCode)"
-    }
-    Stop-Process -Id $process.Id -Force
+$BuildStamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
+$WorkDir = Join-Path (Join-Path $Root "build") "$Version-$BuildStamp"
+$DistDir = Join-Path (Join-Path $Root "dist") "$Version-$BuildStamp"
+& $PythonExe -m PyInstaller --clean --noconfirm --workpath $WorkDir --distpath $DistDir $SpecPath
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller build failed."
 }
 
-Write-Step "Archive files"
-New-Item -ItemType Directory -Force -Path $ArchiveDir | Out-Null
-$ArchiveExe = Join-Path $ArchiveDir (Split-Path -Leaf $DistExe)
-$ArchiveZip = [System.IO.Path]::ChangeExtension($ArchiveExe, ".zip")
-Copy-Item -LiteralPath $DistExe -Destination $ArchiveExe -Force
-Compress-Archive -LiteralPath $DistExe -DestinationPath $ArchiveZip -Force
+$DistExe = (Get-ChildItem -LiteralPath $DistDir -File -Filter "*_$Version.exe" | Select-Object -First 1).FullName
+Assert-PathExists $DistExe "Built exe"
+
+if ($RunSmokeTest) {
+    Write-Step "Smoke test"
+    $Process = Start-Process -FilePath $DistExe -PassThru -WindowStyle Hidden
+    Start-Sleep -Seconds 5
+    if ($Process.HasExited) {
+        throw "Exe exited immediately. Exit code: $($Process.ExitCode)"
+    }
+    Stop-Process -Id $Process.Id -Force
+}
+
+Write-Step "Release files"
+New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
+$ReleaseExe = Join-Path $ReleaseDir (Split-Path -Leaf $DistExe)
+$ReleaseZip = [IO.Path]::ChangeExtension($ReleaseExe, ".zip")
+Copy-Item -LiteralPath $DistExe -Destination $ReleaseExe -Force
+Compress-Archive -LiteralPath $DistExe -DestinationPath $ReleaseZip -Force
 
 Write-Step "Done"
-Write-Host "exe: $ArchiveExe"
-Write-Host "zip: $ArchiveZip"
+Write-Host "exe: $ReleaseExe"
+Write-Host "zip: $ReleaseZip"
