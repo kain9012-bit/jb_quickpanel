@@ -1,0 +1,44 @@
+{
+    "$schema":  "https://schema.tauri.app/config/2",
+    "productName":  "전북교육 한글 서식도우미 v4.0",
+    "version":  "4.0.0",
+    "identifier":  "kr.go.jbe.hwp-helper",
+    "build":  {
+                  "beforeDevCommand":  "pnpm dev",
+                  "devUrl":  "http://localhost:5184",
+                  "beforeBuildCommand":  "pnpm build",
+                  "frontendDist":  "../dist"
+              },
+    "app":  {
+                "windows":  [
+                                {
+                                    "label":  "main",
+                                    "title":  "전북교육 한글 서식도우미 v4.0",
+                                    "width":  500,
+                                    "height":  1040,
+                                    "minWidth":  440,
+                                    "minHeight":  560,
+                                    "maxWidth":  620,
+                                    "resizable":  true,
+                                    "fullscreen":  false,
+                                    "alwaysOnTop":  true,
+                                    "focus":  false
+                                }
+                            ],
+                "security":  {
+                                 "csp":  "default-src \u0027self\u0027; style-src \u0027self\u0027 \u0027unsafe-inline\u0027; img-src \u0027self\u0027 data:; font-src \u0027self\u0027 data:; connect-src \u0027self\u0027 ipc: http://ipc.localhost"
+                             }
+            },
+    "bundle":  {
+                   "active":  true,
+                   "targets":  [
+                                   "nsis"
+                               ],
+                   "icon":  [
+                                "icons/icon.ico"
+                            ],
+                   "resources":  [
+                                     "binaries/jb_hwp_backend.exe"
+                                 ]
+               }
+}

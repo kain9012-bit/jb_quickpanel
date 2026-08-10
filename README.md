@@ -4,11 +4,11 @@
 
 ## 현재 버전
 
-- 최신 소스 진입 파일: `app.py`
-- 창 제목 표시: `전북교육 한글 서식도우미 v3.4`
-- 배포 EXE 이름: `전북교육_한글_서식도우미_v3.4.exe`
-- Windows 검색 이름: `전북교육 한글 서식도우미 (v3.4)`
-- 단일 EXE 실행 시 초기 준비 상태를 보여주는 스플래시 화면 표시
+- 최신 소스 위치: `tauri-prototype/`
+- 창 제목 표시: `전북교육 한글 서식도우미 v4.0`
+- 배포 EXE 이름: `전북교육 한글 서식도우미 v4.0 설치파일.exe`
+- Windows 검색 이름: `전북교육 한글 서식도우미 v4.0`
+- Tauri 설치형 EXE에 Python COM sidecar와 기본 자료를 포함하여 Python 미설치 PC 지원
 - 배포 파일: [GitHub Releases](https://github.com/kain9012-bit/jb_quickpanel/releases)
 - 업데이트 내역: `CHANGELOG.md`
 
@@ -16,7 +16,7 @@
 
 ### 배포본 사용
 
-[GitHub Releases](https://github.com/kain9012-bit/jb_quickpanel/releases)에서 최신 EXE를 내려받아 실행합니다.
+[GitHub Releases](https://github.com/kain9012-bit/jb_quickpanel/releases)에서 최신 v4.0 설치파일을 내려받아 실행합니다.
 
 ### 소스 실행
 
@@ -36,7 +36,7 @@ py -3.12 -m venv .venv
 
 - 기본 제공 서식·양식·심볼·편집용지 빠른 삽입
 - 내 서식·양식·편집용지 등록, 이름 변경, 삭제
-  - 내 서식은 내용 중심, 내 양식은 첫 페이지 상단 기준 2.5배 확대 미리보기 자동 생성
+  - 내 서식·내 양식은 원본 페이지 비율을 유지한 미리보기 자동 생성
   - 사용자 관리에서 미리보기 자동 재생성·이미지 교체·삭제
   - 편집용지 카드에 여백값 미리보기를 자동 표시하고 수정과 동시에 갱신
 - 내 문자표 그룹 추가·수정·삭제 및 기본 문자표보다 위에 우선 표시
@@ -61,7 +61,7 @@ py -3.12 -m venv .venv
   - 줄 단위 자간 정리
   - 자간 초기화
 - 일반 한글 문서와 K-에듀파인 기안창 모드 구분
-- 우측 상단 `설정` 버튼과 별도 설정 창
+- 우측 상단 `설정` 버튼과 본창 안에서 열리는 설정 화면
   - 시작 위치, 마지막 창 위치 기억
   - 시작 시 적용 대상 지정
   - 처음 사용 튜토리얼과 다시 보기
@@ -85,7 +85,7 @@ py -3.12 -m venv .venv
 
 ### 서식/양식/편집용지
 
-- `서식 자동 지정하기`, `중지`, `프롬프트 복사`는 서식 탭 맨 위에 있습니다.
+- `서식 자동 지정하기`, `중지`, `사용방법`은 서식 탭 맨 위에 있습니다.
 - 보고서나 계획서 전체를 한글에서 블록 지정한 뒤 `서식 자동 지정하기`를 누릅니다.
 - 태그가 하나라도 있으면 기존 태그 방식만 실행하고, 태그가 전혀 없을 때만 문서 내부 규칙 분석을 실행합니다.
 - 문서제목은 선택 영역의 첫 번째 유효 문단에서만 판단합니다.
@@ -154,7 +154,7 @@ K-에듀파인 기안창 모드에서는 자간 정리 박스가 숨겨집니다
 - 한글에서 선택한 현재 블록을 등록하거나 기존 HWP·HWPX 파일을 선택할 수 있습니다.
 - 서식은 현재 블록 등록, 양식은 한글 파일 등록을 기본 선택으로 안내합니다.
 - 등록할 때 파일을 사용자 자료 폴더로 복사하므로 원본을 옮기거나 삭제해도 등록 항목은 유지됩니다.
-- 내 서식 미리보기는 내용 중심으로 표시하고, 내 양식 미리보기는 첫 페이지 상단을 2.5배 확대해 표시합니다.
+- 내 서식과 내 양식 미리보기는 원본 페이지 비율을 유지해 표시합니다.
 - 사용자 관리에서 미리보기를 자동으로 다시 만들거나 원하는 이미지로 교체·삭제할 수 있습니다.
 - 각 탭의 `사용자 서식 관리`, `사용자 양식 관리`에서 이름을 바꾸거나 삭제할 수 있습니다.
 - 사용자 항목 등록과 삽입은 일반 한글 모드에서 사용합니다.
@@ -189,99 +189,86 @@ K-에듀파인 기안창 모드에서는 자간 정리 박스가 숨겨집니다
 - 안내를 닫거나 완료한 뒤에도 `설정 > 튜토리얼 다시 보기`에서 다시 확인할 수 있습니다.
 - `Windows 시작 시 트레이로 시작`은 `닫기 시 트레이로 최소화`와 `Windows 시작 시 자동 실행`을 모두 켠 경우에만 사용할 수 있습니다.
 - Windows 자동 실행을 켠 상태에서 새 버전을 실행하면 자동 실행 경로도 현재 실행 파일로 갱신됩니다.
-- 시작 메뉴에는 `전북교육 한글 서식도우미 (v3.4)`으로 등록됩니다. 새 버전이나 다른 위치의 파일을 실행하면 현재 실행 파일을 가리키도록 갱신하고 같은 앱의 구버전 바로가기는 정리합니다.
+- 시작 메뉴에는 `전북교육 한글 서식도우미 v4.0`으로 등록됩니다. 새 버전이나 다른 위치의 파일을 실행하면 현재 실행 파일을 가리키도록 갱신하고 같은 앱의 구버전 바로가기는 정리합니다.
 - 업데이트 확인에 실패해도 프로그램 실행과 한글 문서 작업은 계속할 수 있습니다.
 - 업데이트 안내 연결 정보는 아직 비워 두었으며, 고유번호를 설정하기 전까지는 설정 창에 `업데이트 정보 미설정`으로 표시됩니다.
 
 ## 저장소 구조
 
-main 브랜치에는 현재 배포 버전의 소스와 실행에 필요한 자료만 관리합니다. 과거 버전의 변경 내용은 `CHANGELOG.md`에서 확인하고, 배포본은 GitHub Releases와 버전 태그로 관리합니다.
+v4.0 화면과 배포 코드는 `tauri-prototype`에서 관리하고, 검증된 한글 자동화 로직은 기존 `src/jb_quickpanel` 패키지를 재사용합니다.
 
 ```text
 jb_quickpanel/
-  app.py                                 # 공개 소스 실행 진입점
+  tauri-prototype/
+    src/                       # React 사용자 화면
+    src-tauri/                 # Tauri 창·트레이·단축키·sidecar 실행
+    backend/                   # Python JSON 명령 서버
+    jb_hwp_backend.spec        # Python COM sidecar PyInstaller 설정
+    build_v4.ps1               # 검사·sidecar·NSIS 설치파일 빌드
   src/jb_quickpanel/
-    core/                                # 공통 런타임과 단일 실행 관리
-    bridges/                             # 일반 한글·K-에듀파인 연결
-    features/                            # 자동 서식, 표·셀·단축키 기능
-    services/                            # 설정, 업데이트, 사용자 자료
-    ui/                                  # Tkinter 화면
-    vendor/olefile/                      # HWP 내장 미리보기 읽기
-  assets/                                # 아이콘과 스플래시
-  blocks_hwp/                            # 기본 서식 조각
-  forms_hwp/                             # 기본 양식
-  thumbs/                                # 서식 미리보기
-  forms_thumbs/                          # 양식 미리보기
-  page_thumbs/                           # 편집용지 미리보기
-  symbols/                               # 심볼 이미지
-  table_thumbs/                          # 표 작업 아이콘
-  config/                                # 기본 설정 데이터
-  tests/                                 # 자동 테스트
-  requirements.txt                      # 실행 의존성
-  requirements-build.txt                # 빌드 의존성
-  build_release.ps1                     # 검사·빌드·배포 파일 생성
-  전북교육_한글_서식도우미_v3.4.spec    # PyInstaller 설정
+    core/                      # 공통 런타임
+    bridges/                   # 일반 한글·K-에듀파인 연결
+    features/                  # 자동 서식, 표·셀·단축키 기능
+    services/                  # 설정, 업데이트, 사용자 자료
+  assets/                      # 아이콘과 스플래시
+  blocks_hwp/                  # 기본 서식 조각
+  forms_hwp/                   # 기본 양식
+  thumbs/                      # 서식 미리보기
+  forms_thumbs/                # 양식 미리보기
+  page_thumbs/                 # 편집용지 미리보기
+  symbols/                     # 심볼 이미지
+  table_thumbs/                # 표 작업 아이콘
+  config/                      # 기본 설정 데이터
   README.md
   CHANGELOG.md
 ```
 
 ## 수정 원칙
 
-- 새 기능은 가능한 한 `features`에 먼저 작성하고, UI는 버튼 연결만 담당하게 합니다.
-- 일반 한글 조작은 `bridges/hwp_bridge.py`, 기안창 조작은 `bridges/wxs_bridge.py`에 둡니다.
-- 화면 배치나 탭 표시 정책은 `ui/app_window.py`에서만 다룹니다.
-- 버튼 이름, 모드별 표시 정책, 글꼴/자간 버튼 정의는 `features/registry.py`에 둡니다.
-- 설정 저장과 오류 기록은 `services/app_config.py`에 두고, 사용자 등록 자료는 `services/user_content.py`에서 관리합니다.
-- 리소스 경로, 클립보드, 공통 유틸은 `core/runtime.py`에 둡니다.
-- 기능을 바꾸면 `CHANGELOG.md`에 버전별 변경 내용을 남깁니다.
+- React 화면은 `tauri-prototype/src`, 창·트레이·전역 단축키와 sidecar 관리는 `tauri-prototype/src-tauri`에서 수정합니다.
+- 문서 자동화 기능은 `src/jb_quickpanel/features`, 일반 한글·기안창 연결은 `src/jb_quickpanel/bridges`에 둡니다.
+- Tauri와 한글 자동화 로직의 연결은 `tauri-prototype/backend`의 JSON 명령 서버에서 담당합니다.
+- 설정과 사용자 등록 자료는 `%APPDATA%\JbHwpHelper`에 저장해 버전이 바뀌어도 유지합니다.
+- 기능을 바꾸면 `CHANGELOG.md`와 `tauri-prototype/CHANGELOG.md`를 함께 갱신합니다.
 
 ## 개발 환경
 
-Python 3.12 가상환경을 권장합니다.
+Python 3.12, Node.js, pnpm과 Rust가 필요합니다.
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+cd tauri-prototype
+pnpm install
+pnpm tauri:dev
 ```
 
-소스 실행:
+전체 검사:
 
 ```powershell
-.\.venv\Scripts\python.exe app.py
+cd tauri-prototype
+$env:PYTHONPATH = (Resolve-Path ..).Path
+python -m unittest discover -s backend -p "test_*.py" -v
+pnpm build
+cd src-tauri
+cargo check
 ```
-
-전체 테스트:
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
-
-한글 자동화 기능은 Windows에서 한글이 실행 중일 때 동작합니다. `tkinter`는 Python 설치 프로그램에서 함께 설치해야 합니다.
 
 ## 빌드
 
-빌드 전 검사만 실행:
+Python COM sidecar와 NSIS 설치형 EXE·ZIP을 한 번에 생성합니다.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\build_release.ps1" -Version v3.4 -CheckOnly
+cd tauri-prototype
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\build_v4.ps1"
 ```
 
-단일 EXE와 ZIP 생성:
+결과물은 Git 추적에서 제외된 `release` 폴더에 생성됩니다.
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\build_release.ps1" -Version v3.4
-```
+- `전북교육 한글 서식도우미 v4.0 설치파일.exe`
+- `전북교육 한글 서식도우미 v4.0.zip`
 
-스크립트는 `.venv`가 있으면 해당 Python을 우선 사용하고, 없으면 PATH의 `python.exe`를 사용합니다. 결과물은 Git 추적에서 제외된 `release` 폴더에 생성됩니다.
-
-빌드 후 확인할 항목:
-
-- EXE가 바로 종료되지 않는지 확인
-- `서식`, `편집도구`, `문자표`, `심볼`, `양식`, `편집용지`, `설정` 탭이 정상 표시되는지 확인
-- 일반 한글 모드와 K-에듀파인 기안창 모드의 기능이 구분되는지 확인
-- GitHub Releases에 EXE와 ZIP 게시
-- `CHANGELOG.md` 갱신
+빌드 후에는 설치·실행, 일반 한글 연결, 기본 서식 삽입, 셀 정리, 자간 정리와 트레이 재실행을 확인합니다.
 
 ## 자료 폴더
 
@@ -290,4 +277,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\build_release.ps1" -V
 - `forms_hwp`: 양식 파일
 - `thumbs`, `forms_thumbs`, `page_thumbs`, `table_thumbs`: 미리보기 이미지
 - `symbols`: 심볼 이미지
-- `report_format_prompt.txt`: 프롬프트 복사용 텍스트
+- `report_format_prompt.txt`: 태그형 서식 규칙 텍스트

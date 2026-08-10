@@ -1,0 +1,11 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+backend/__pycache__/
+*.log
+/tauri-*.png
+/tauri-*.jpg
+backend/_e2e*
+build-sidecar/
+src-tauri/binaries/*.exe
