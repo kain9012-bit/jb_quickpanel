@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
+import { isRegistered, register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import {
   AlignHorizontalSpaceAround,
   Brush,
@@ -77,6 +77,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   start_minimized: false,
   tutorial_completed: false,
   check_updates_on_startup: true,
+  toggle_hotkey: "Ctrl+Alt+H",
   global_hotkeys_enabled: true,
   global_hotkeys: {},
   tab_order: ["style", "edit", "chars", "symbol", "forms", "page"],
@@ -102,7 +103,7 @@ type HotkeyAction = {
   label: string;
   command?: string;
   args?: Record<string, unknown>;
-  special?: "toggle_window" | "auto_format" | "insert_images";
+  special?: "auto_format" | "insert_images";
 };
 
 function normalizeShortcutForTauri(shortcut: string): string {
@@ -284,6 +285,8 @@ export default function App() {
   const [hotkeyOpen, setHotkeyOpen] = useState(false);
   const [hotkeySearch, setHotkeySearch] = useState("");
   const [capturingHotkey, setCapturingHotkey] = useState("");
+  const [capturingToggleHotkey, setCapturingToggleHotkey] = useState(false);
+  const [toggleHotkeyError, setToggleHotkeyError] = useState("");
   const [tutorialOpen, setTutorialOpen] = useState(false);
   const [sourceKind, setSourceKind] = useState<Exclude<ContentKind, "page"> | null>(null);
   const [managerKind, setManagerKind] = useState<ContentKind | null>(null);
@@ -663,7 +666,6 @@ export default function App() {
 
   const hotkeyActions = useMemo<HotkeyAction[]>(() => {
     const actions: HotkeyAction[] = [
-      { id: "app.toggle_window", category: "프로그램", label: "서식도우미 열기/숨기기", special: "toggle_window" },
       { id: "feature:auto_format_report", category: "서식", label: "서식 자동 지정하기", special: "auto_format" },
       { id: "feature:cell_clean_spaces", category: "셀 정리", label: "불필요한 앞뒤 공백 제거", command: "cell_clean_spaces" },
       { id: "feature:cell_cleanup_excel_paste", category: "셀 정리", label: "공백·배경색 한 번에 정리", command: "cell_cleanup_excel" },
@@ -734,15 +736,6 @@ export default function App() {
   }, [characterGroups, imageMode, tableTools]);
 
   const triggerHotkey = useCallback(async (action: HotkeyAction) => {
-    if (action.special === "toggle_window") {
-      const window = getCurrentWindow();
-      if (await window.isVisible()) await window.hide();
-      else {
-        await window.show();
-        await window.unminimize();
-      }
-      return;
-    }
     if (action.special === "auto_format") {
       await startAutoFormat();
       return;
@@ -755,29 +748,100 @@ export default function App() {
   }, [execute, insertCellImages, startAutoFormat]);
 
   useEffect(() => {
-    let disposed = false;
-    void (async () => {
+    const shortcut = normalizeShortcutForTauri(settings.toggle_hotkey.trim());
+    if (!shortcut) {
+      setToggleHotkeyError("");
+      return undefined;
+    }
+
+    let cancelled = false;
+    let mine = false;
+
+    const run = async () => {
       try {
-        await unregisterAll();
-        if (!settings.global_hotkeys_enabled) return;
-        const byId = new Map(hotkeyActions.map((action) => [action.id, action]));
-        for (const [actionId, shortcut] of Object.entries(settings.global_hotkeys ?? {})) {
-          const action = byId.get(actionId);
-          if (!action || !shortcut || disposed) continue;
-          await register(normalizeShortcutForTauri(shortcut), (event) => {
+        if (await isRegistered(shortcut)) await unregister(shortcut);
+        if (cancelled) return;
+
+        await register(shortcut, async (event) => {
+          if (event.state !== "Pressed") return;
+          try {
+            const appWindow = getCurrentWindow();
+            const visible = await appWindow.isVisible();
+            const minimized = await appWindow.isMinimized();
+            if (visible && !minimized) {
+              await appWindow.hide();
+            } else {
+              await appWindow.show();
+              await appWindow.unminimize();
+              await appWindow.setAlwaysOnTop(true);
+              if (!settings.always_on_top) await appWindow.setAlwaysOnTop(false);
+              await appWindow.setFocus();
+            }
+          } catch (error) {
+            setToggleHotkeyError(
+              `${shortcut}를 눌렀지만 창을 열거나 숨기지 못했습니다: ${String(error)}`,
+            );
+          }
+        });
+
+        if (cancelled) {
+          await unregister(shortcut).catch(() => undefined);
+          return;
+        }
+        mine = true;
+        setToggleHotkeyError("");
+      } catch (error) {
+        if (!cancelled) {
+          setToggleHotkeyError(
+            `${shortcut}를 등록하지 못했습니다. 다른 프로그램이 사용 중인지 확인하세요. (${String(error)})`,
+          );
+        }
+      }
+    };
+    void run();
+
+    return () => {
+      cancelled = true;
+      if (mine) void unregister(shortcut).catch(() => undefined);
+    };
+  }, [settings.always_on_top, settings.toggle_hotkey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const mine = new Set<string>();
+
+    const run = async () => {
+      if (!settings.global_hotkeys_enabled) return;
+      const byId = new Map(hotkeyActions.map((action) => [action.id, action]));
+      const toggleShortcut = normalizeShortcutForTauri(settings.toggle_hotkey).toLocaleLowerCase();
+      for (const [actionId, shortcut] of Object.entries(settings.global_hotkeys ?? {})) {
+        const action = byId.get(actionId);
+        const normalized = normalizeShortcutForTauri(shortcut);
+        if (!action || !normalized || cancelled) continue;
+        if (normalized.toLocaleLowerCase() === toggleShortcut) continue;
+        try {
+          if (await isRegistered(normalized)) await unregister(normalized);
+          if (cancelled) return;
+          await register(normalized, (event) => {
             if (event.state === "Pressed") void triggerHotkey(action);
           });
+          if (cancelled) {
+            await unregister(normalized).catch(() => undefined);
+            return;
+          }
+          mine.add(normalized);
+        } catch (error) {
+          if (!cancelled) setStatus(`기능 단축키 ${shortcut} 등록 실패: ${String(error)}`);
         }
-      } catch (error) {
-        if (!disposed) setStatus(`전역 단축키 등록 실패: ${String(error)}`);
       }
-    })();
-    return () => {
-      disposed = true;
-      void unregisterAll().catch(() => undefined);
     };
-  }, [hotkeyActions, settings.global_hotkeys, settings.global_hotkeys_enabled, triggerHotkey]);
+    void run();
 
+    return () => {
+      cancelled = true;
+      for (const shortcut of mine) void unregister(shortcut).catch(() => undefined);
+    };
+  }, [hotkeyActions, settings.global_hotkeys, settings.global_hotkeys_enabled, settings.toggle_hotkey, triggerHotkey]);
   const filteredHotkeyActions = useMemo(() => {
     const query = hotkeySearch.trim().toLocaleLowerCase();
     if (!query) return hotkeyActions;
@@ -786,7 +850,26 @@ export default function App() {
     );
   }, [hotkeyActions, hotkeySearch]);
 
+  const saveToggleHotkey = async (shortcut: string) => {
+    const next = { ...(settings.global_hotkeys ?? {}) };
+    const signature = normalizeShortcutForTauri(shortcut).toLocaleLowerCase();
+    for (const [id, value] of Object.entries(next)) {
+      if (normalizeShortcutForTauri(value).toLocaleLowerCase() === signature) delete next[id];
+    }
+    setCapturingToggleHotkey(false);
+    await saveSettings({ toggle_hotkey: shortcut, global_hotkeys: next });
+  };
+
   const saveHotkey = async (actionId: string, shortcut: string) => {
+    if (
+      shortcut
+      && normalizeShortcutForTauri(shortcut).toLocaleLowerCase()
+        === normalizeShortcutForTauri(settings.toggle_hotkey).toLocaleLowerCase()
+    ) {
+      setCapturingHotkey("");
+      setStatus("이 단축키는 서식도우미 열기/숨기기에 사용 중입니다.");
+      return;
+    }
     const next = { ...(settings.global_hotkeys ?? {}) };
     for (const [id, value] of Object.entries(next)) {
       if (id !== actionId && value === shortcut) delete next[id];
@@ -1173,7 +1256,7 @@ export default function App() {
       </footer>
 
       {settingsOpen && (
-        <Modal title="설정" onClose={() => setSettingsOpen(false)} wide className="settings-modal">
+        <Modal title="설정" onClose={() => { setSettingsOpen(false); setCapturingToggleHotkey(false); }} wide className="settings-modal">
           <div className="settings-sections">
             <section>
               <h3>화면</h3>
@@ -1291,13 +1374,60 @@ export default function App() {
               </label>
             </section>
             <section>
-              <h3>전역 단축키</h3>
+              <h3>서식도우미 열기/숨기기</h3>
+              <div className="setting-field-row toggle-hotkey-setting">
+                <span><strong>창 열기·숨기기 단축키</strong><small>기능 단축키 사용 여부와 관계없이 언제든 서식도우미를 열거나 숨깁니다.</small></span>
+                <div className="toggle-hotkey-actions">
+                  <button
+                    type="button"
+                    className={capturingToggleHotkey ? "is-capturing" : ""}
+                    onClick={() => setCapturingToggleHotkey(true)}
+                  >{settings.toggle_hotkey || "지정"}</button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    disabled={settings.toggle_hotkey === "Ctrl+Alt+H"}
+                    onClick={() => void saveToggleHotkey("Ctrl+Alt+H")}
+                    title="기본 단축키로 되돌리기"
+                    aria-label="기본 단축키로 되돌리기"
+                  ><RotateCcw size={13} /></button>
+                </div>
+              </div>
+              {capturingToggleHotkey && (
+                <div
+                  className="hotkey-capture standalone-hotkey-capture"
+                  tabIndex={0}
+                  autoFocus
+                  onKeyDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (event.key === "Escape") {
+                      setCapturingToggleHotkey(false);
+                      return;
+                    }
+                    const shortcut = shortcutFromEvent(event);
+                    if (shortcut === "") {
+                      setStatus("Ctrl, Alt, Shift 또는 Win 중 하나를 함께 누르세요.");
+                      return;
+                    }
+                    if (shortcut) void saveToggleHotkey(shortcut);
+                  }}
+                >
+                  <strong>새 열기/숨기기 단축키를 누르세요.</strong>
+                  <span>Esc를 누르면 취소합니다.</span>
+                </div>
+              )}
+              {toggleHotkeyError && <p className="setting-warning">{toggleHotkeyError}</p>}
+            </section>
+            <section>
+              <h3>기능 전역 단축키</h3>
               <label className="toggle-row">
-                <span><strong>전역 단축키 사용</strong><small>서식도우미가 트레이에 있어도 지정한 기능을 실행합니다.</small></span>
+                <span><strong>기능 단축키 사용</strong><small>서식도우미가 트레이에 있어도 지정한 문서 기능을 실행합니다.</small></span>
                 <input type="checkbox" checked={settings.global_hotkeys_enabled} onChange={(event) => void saveSettings({ global_hotkeys_enabled: event.target.checked })} />
               </label>
-              <button type="button" className="secondary-command full-width" onClick={() => setHotkeyOpen(true)}>단축키 설정</button>
-            </section>            <section>
+              <button type="button" className="secondary-command full-width" onClick={() => setHotkeyOpen(true)}>기능 단축키 설정</button>
+            </section>
+            <section>
               <h3>업데이트</h3>
               <label className="toggle-row">
                 <span><strong>시작할 때 최신 버전 확인</strong><small>업데이트 정보가 등록되면 새 버전을 안내합니다.</small></span>
@@ -1380,7 +1510,7 @@ export default function App() {
       )}
 
       {hotkeyOpen && (
-        <Modal title="전역 단축키 설정" onClose={() => { setHotkeyOpen(false); setCapturingHotkey(""); }} wide>
+        <Modal title="기능 전역 단축키 설정" onClose={() => { setHotkeyOpen(false); setCapturingHotkey(""); }} wide>
           <div className="hotkey-editor">
             <input
               className="hotkey-search"

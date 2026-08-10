@@ -16,12 +16,13 @@ $BuildRoot = Join-Path $PrototypeRoot "build-sidecar"
 $SidecarWork = Join-Path $BuildRoot "work"
 $SidecarDist = Join-Path $BuildRoot "dist"
 $ReleaseDir = Join-Path $RepositoryRoot "release"
+$ArchiveDir = Join-Path $RepositoryRoot "exe버전관리"
 
 function Invoke-Checked {
     param([scriptblock]$Command, [string]$Message)
     & $Command
     if ($LASTEXITCODE -ne 0) {
-        throw "$Message (exit code: $LASTEXITCODE)"
+        throw ($Message + " - exit code: " + $LASTEXITCODE)
     }
 }
 
@@ -108,11 +109,22 @@ Write-Step "릴리스 파일 정리"
 New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
 $ReleaseExe = Join-Path $ReleaseDir "전북교육 한글 서식도우미 v4.0 설치파일.exe"
 $ReleaseZip = Join-Path $ReleaseDir "전북교육 한글 서식도우미 v4.0.zip"
+$GithubExe = Join-Path $ReleaseDir "JbHwpHelper_v4.0_Setup.exe"
+$GithubZip = Join-Path $ReleaseDir "JbHwpHelper_v4.0.zip"
+$ArchiveExe = Join-Path $ArchiveDir "전북교육_한글_서식도우미_v4.0.exe"
+$ArchiveZip = Join-Path $ArchiveDir "전북교육_한글_서식도우미_v4.0.zip"
 Copy-Item -LiteralPath $Installer.FullName -Destination $ReleaseExe -Force
 Compress-Archive -LiteralPath $ReleaseExe -DestinationPath $ReleaseZip -Force
+Copy-Item -LiteralPath $ReleaseExe -Destination $GithubExe -Force
+Copy-Item -LiteralPath $ReleaseZip -Destination $GithubZip -Force
+New-Item -ItemType Directory -Force -Path $ArchiveDir | Out-Null
+Copy-Item -LiteralPath $ReleaseExe -Destination $ArchiveExe -Force
+Copy-Item -LiteralPath $ReleaseZip -Destination $ArchiveZip -Force
 
 Write-Step "완료"
 Write-Host "표시 버전: $DisplayVersion"
 Write-Host "내부 버전: $InternalVersion"
 Write-Host "설치파일: $ReleaseExe"
 Write-Host "압축파일: $ReleaseZip"
+Write-Host "버전 보관 설치파일: $ArchiveExe"
+Write-Host "GitHub 업로드 설치파일: $GithubExe"

@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 
 APP_DIR_NAME = "JbHwpHelper"
-SETTINGS_VERSION = 4
+SETTINGS_VERSION = 5
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "version": SETTINGS_VERSION,
@@ -22,6 +22,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "start_minimized": False,
     "tutorial_completed": False,
     "check_updates_on_startup": True,
+    "toggle_hotkey": "Ctrl+Alt+H",
     "global_hotkeys_enabled": True,
     "global_hotkeys": {},
     "start_menu_auto_done": False,

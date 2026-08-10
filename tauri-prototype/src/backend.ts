@@ -66,6 +66,7 @@ export type AppSettings = {
   start_minimized: boolean;
   tutorial_completed: boolean;
   check_updates_on_startup: boolean;
+  toggle_hotkey: string;
   global_hotkeys_enabled: boolean;
   global_hotkeys: Record<string, string>;
   tab_order: string[];

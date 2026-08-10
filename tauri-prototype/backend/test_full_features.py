@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from PIL import Image
@@ -78,6 +79,28 @@ class FullCatalogTests(unittest.TestCase):
         self.assertTrue(any(group["title"] == "괄호" for group in character_groups))
         self.assertGreaterEqual(len(picture_groups), 1)
         self.assertTrue(any(group["items"] for group in picture_groups))
+
+    def test_legacy_toggle_hotkey_moves_out_of_feature_hotkeys(self):
+        legacy = {
+            "global_hotkeys_enabled": False,
+            "global_hotkeys": {
+                "app.toggle_window": "Ctrl+Shift+J",
+                "feature:auto_format_report": "Ctrl+Alt+A",
+            },
+        }
+        with (
+            patch("backend.full_features.app_config.load_settings", return_value=legacy),
+            patch("backend.full_features.app_config.save_settings") as save_settings,
+        ):
+            settings = self.features.load_settings()
+
+        self.assertEqual(settings["toggle_hotkey"], "Ctrl+Shift+J")
+        self.assertNotIn("app.toggle_window", settings["global_hotkeys"])
+        self.assertEqual(
+            settings["global_hotkeys"]["feature:auto_format_report"],
+            "Ctrl+Alt+A",
+        )
+        save_settings.assert_called_once()
 
     def test_update_check_is_ready_without_an_assigned_identifier(self):
         result = self.features.update_status()

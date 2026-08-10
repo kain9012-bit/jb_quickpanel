@@ -406,6 +406,12 @@ class FullFeatureService:
 
     def load_settings(self) -> dict[str, Any]:
         values = app_config.load_settings()
+        hotkeys = dict(values.get("global_hotkeys") or {})
+        legacy_toggle = str(hotkeys.pop("app.toggle_window", "") or "").strip()
+        if legacy_toggle:
+            values["toggle_hotkey"] = legacy_toggle
+            values["global_hotkeys"] = hotkeys
+            app_config.save_settings(values)
         defaults = self.config().get("settings") or {}
         values.setdefault("always_on_top", bool(defaults.get("always_on_top", True)))
         values.setdefault("target_mode", values.get("start_mode", "hwp"))
@@ -427,6 +433,7 @@ class FullFeatureService:
             "start_minimized",
             "tutorial_completed",
             "check_updates_on_startup",
+            "toggle_hotkey",
             "global_hotkeys_enabled",
             "global_hotkeys",
             "tab_order",
