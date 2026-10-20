@@ -35,11 +35,11 @@ class _FakeShell:
         return self.shortcut
 
 
-class VersionedStartMenuTests(unittest.TestCase):
-    def test_shortcut_name_contains_version(self):
+class StartMenuShortcutTests(unittest.TestCase):
+    def test_shortcut_name_does_not_contain_version(self):
         self.assertEqual(
             app_config.start_menu_shortcut_name("v2.6"),
-            "전북교육 한글 서식도우미 (v2.6).lnk",
+            "JBEdu FORM (JB에듀 폼).lnk",
         )
 
     def test_remove_registration_deletes_only_this_apps_shortcuts(self):
@@ -47,19 +47,22 @@ class VersionedStartMenuTests(unittest.TestCase):
             menu = app_config.start_menu_shortcut_path("v2.6").parent
             legacy = menu / "전북교육 한글 서식도우미.lnk"
             old = menu / "전북교육 한글 서식도우미 (v2.5).lnk"
+            old_direct = menu / "전북교육 한글 서식도우미 v2.4.lnk"
             unrelated = menu / "전북교육 한글 서식도우미 자료.lnk"
-            for path in (legacy, old, unrelated):
+            for path in (legacy, old, old_direct, unrelated):
                 path.write_text("test", encoding="utf-8")
 
             app_config.set_start_menu_registered(False, "v2.6")
 
             self.assertFalse(legacy.exists())
             self.assertFalse(old.exists())
+            self.assertFalse(old_direct.exists())
             self.assertTrue(unrelated.exists())
 
-    def test_register_creates_current_version_then_removes_old_shortcuts(self):
+    def test_register_creates_fixed_name_then_removes_old_shortcuts(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"APPDATA": folder}):
-            old = app_config.start_menu_shortcut_path("v2.5")
+            menu = app_config.start_menu_shortcut_path("v2.6").parent
+            old = menu / "전북교육 한글 서식도우미 v2.5.lnk"
             old.write_text("old", encoding="utf-8")
             shell = _FakeShell()
             with patch("win32com.client.Dispatch", return_value=shell), patch.object(
@@ -72,11 +75,12 @@ class VersionedStartMenuTests(unittest.TestCase):
             current = app_config.start_menu_shortcut_path("v2.6")
             self.assertTrue(current.exists())
             self.assertFalse(old.exists())
-            self.assertEqual(shell.shortcut.Description, "전북교육 한글 서식도우미 v2.6")
+            self.assertEqual(shell.shortcut.Description, "JBEdu FORM (JB에듀 폼)")
 
     def test_failed_registration_keeps_old_shortcut(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"APPDATA": folder}):
-            old = app_config.start_menu_shortcut_path("v2.5")
+            menu = app_config.start_menu_shortcut_path("v2.6").parent
+            old = menu / "전북교육 한글 서식도우미 v2.5.lnk"
             old.write_text("old", encoding="utf-8")
             shell = _FakeShell(fail=True)
             with patch("win32com.client.Dispatch", return_value=shell), patch.object(

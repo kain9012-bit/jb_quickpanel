@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 from src.jb_quickpanel.core.runtime import *
 from src.jb_quickpanel.features.cell_text import *
+from src.jb_quickpanel.features.cell_edges import CellEdgeEditor
+from src.jb_quickpanel.features.character_effects import script_parameters
+from src.jb_quickpanel.features.line_spacing import LineSpacingCleanup
+from src.jb_quickpanel.features.auto_format_transaction import SelectedTextRewrite
 from src.jb_quickpanel.features.cell_images import (
     IMAGE_SIZE_FIT_INSIDE,
     IMAGE_SIZE_FIT_WIDTH,
@@ -18,8 +22,14 @@ class HwpBridge:
     """
     def __init__(self):
         self.hwp = None
+        self._auto_format_transaction = None
         self._cell_span_prop_action = None
         self._cell_span_prop_available = None
+    def _execute_action(self, action, parameter_set):
+        result = self.hwp.HAction.Execute(action, parameter_set)
+        if isinstance(result, (bool, int)) and not result:
+            raise RuntimeError(f"한글에서 {action} 명령을 실행하지 못했습니다.")
+        return result
     def reset(self):
         self.hwp = None
         self._cell_span_prop_action = None
@@ -45,7 +55,9 @@ class HwpBridge:
         """
         try:
             if self.hwp is not None:
-                return True, "OK"
+                if hwp_connection_matches_visible_target(self.hwp):
+                    return True, "OK"
+                self.reset()
             ok, hwp, msg = get_running_hwp_from_rot()
             if not ok:
                 self.hwp = None
@@ -57,9 +69,19 @@ class HwpBridge:
             return False, f"실행 중 한글 COM 연결 실패: {e}"
 
     def ensure(self):
-        if self.hwp is None:
-            return self.connect_without_focus()
-        return True, "OK"
+        transaction = self._auto_format_transaction
+        if transaction is not None:
+            try:
+                transaction._check_document()
+                if self.hwp is transaction.hwp and hwp_connection_matches_visible_target(self.hwp):
+                    return True, "OK"
+            except Exception:
+                pass
+            return False, "작업 대상 한글 문서가 바뀌어 작업을 중단했습니다."
+        if self.hwp is not None and hwp_connection_matches_visible_target(self.hwp):
+            return True, "OK"
+        self.reset()
+        return self.connect_without_focus()
     def _retry_once_with_reconnect(self, fn):
         try:
             return fn()
@@ -79,13 +101,18 @@ class HwpBridge:
         try:
             self.hwp.HAction.GetDefault("InsertText", self.hwp.HParameterSet.HInsertText.HSet)
             self.hwp.HParameterSet.HInsertText.Text = text
-            self.hwp.HAction.Execute("InsertText", self.hwp.HParameterSet.HInsertText.HSet)
+            self._execute_action("InsertText", self.hwp.HParameterSet.HInsertText.HSet)
             return True, "문자 삽입 완료"
         except Exception as e:
             if is_rpc_error(e):
                 self.reset()
             return False, f"문자 삽입 실패: {e}"
-    def insert_file(self, filepath_abs: str):
+    def insert_file(
+        self,
+        filepath_abs: str,
+        preserve_document: bool = False,
+        preserve_section=None,
+    ):
         ok, msg = self.ensure()
         if not ok:
             return False, msg
@@ -101,19 +128,42 @@ class HwpBridge:
                     break
                 except Exception:
                     pass
-            for k, v in [("KeepCharshape", 1), ("KeepParashape", 1), ("KeepSection", 0), ("KeepNumbering", 1)]:
+            keep_section = preserve_document if preserve_section is None else preserve_section
+            preserve_options = [
+                ("KeepCharshape", 1),
+                ("KeepParashape", 1),
+                ("KeepSection", 1 if keep_section else 0),
+                ("KeepNumbering", 1),
+            ]
+            if preserve_document:
+                preserve_options.append(("KeepStyle", 1))
+            for k, v in preserve_options:
                 try:
                     setattr(ps, k, v)
                 except Exception:
                     pass
-            self.hwp.HAction.Execute("InsertFile", ps.HSet)
+            self._execute_action("InsertFile", ps.HSet)
             return True, "삽입 완료"
         except Exception as e:
             if is_rpc_error(e):
                 self.reset()
             return False, f"삽입 실패: {e}"
 
-    def save_selected_block(self, filepath_abs: str):
+    def insert_manual_style(self, filepath_abs: str):
+        ok, message = self.insert_file(filepath_abs)
+        if not ok:
+            return False, message
+
+        time.sleep(0.08)
+        ok, message = self.run_first_supported(["MoveLineEnd"])
+        if not ok:
+            return False, f"서식 삽입 후 줄 끝 이동 실패: {message}"
+
+        ok, message = self.insert_paragraph_break()
+        if not ok:
+            return False, f"서식 삽입 후 줄 추가 실패: {message}"
+        return True, "서식 삽입 완료"
+    def save_selected_block(self, filepath_abs: str, format_name: str = "HWP"):
         ok, msg = self.ensure()
         if not ok:
             return False, msg
@@ -144,14 +194,15 @@ class HwpBridge:
                     pass
             if not file_name_set:
                 return False, "블록 저장 경로를 한글에 전달하지 못했습니다."
-            ps.Format = "HWP"
+            save_format = str(format_name or "HWP").strip().upper()
+            ps.Format = "HWPX" if save_format == "HWPX" else "HWP"
             try:
                 ps.Attributes = 1
             except Exception:
                 pass
             executed = self.hwp.HAction.Execute("FileSaveBlock_S", ps.HSet)
             time.sleep(0.05)
-            if executed is False or not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            if (isinstance(executed, (bool, int)) and not executed) or not os.path.isfile(path) or os.path.getsize(path) <= 0:
                 return False, "선택 영역을 한글 파일로 저장하지 못했습니다. 블록 범위를 다시 확인하세요."
             return True, path
         except Exception as exc:
@@ -159,12 +210,158 @@ class HwpBridge:
                 self.reset()
             return False, f"선택 영역 저장 실패: {exc}"
 
+    def create_auto_format_checkpoint(self):
+        import uuid
+        from src.jb_quickpanel.services.app_config import app_data_dir
+
+        ok, message = self.ensure()
+        if not ok:
+            return False, message
+        position_range = self._selected_report_position_range()
+        if not position_range:
+            return False, "선택 영역의 위치를 확인하지 못했습니다. 한글에서 적용할 내용을 블록 지정하세요."
+        try:
+            document_id = int(self.hwp.XHwpDocuments.Active_XHwpDocument.DocumentID)
+            source_hwp = self.hwp
+        except Exception:
+            return False, "작업 대상 한글 문서를 확인하지 못했습니다."
+        ok, page_setup = self.capture_page_setup()
+        if not ok:
+            return False, page_setup
+        recovery_path = app_data_dir() / "auto_format_recovery" / f"{uuid.uuid4().hex}.hwp"
+        ok, message = self.save_selected_block(str(recovery_path))
+        if not ok:
+            return False, message
+        if self.hwp is not source_hwp or int(self.hwp.XHwpDocuments.Active_XHwpDocument.DocumentID) != document_id:
+            return False, f"백업 중 한글 문서가 바뀌어 작업을 중단했습니다. 복구 파일: {recovery_path}"
+        if not self._restore_selected_report_range(position_range):
+            return False, f"원본 선택 영역을 다시 지정하지 못했습니다. 복구 파일: {recovery_path}"
+        return True, {
+            "path": str(recovery_path),
+            "start": position_range[0],
+            "end": position_range[1],
+            "page_setup": page_setup,
+            "document_id": document_id,
+            "_hwp": source_hwp,
+        }
+
+    def begin_auto_format_rewrite(self, checkpoint):
+        transaction = SelectedTextRewrite(self.hwp, checkpoint["start"], checkpoint["end"])
+        try:
+            if "_hwp" in checkpoint and self.hwp is not checkpoint["_hwp"]:
+                return False, "백업한 한글 연결이 바뀌어 작업을 중단했습니다."
+            if "document_id" in checkpoint and int(self.hwp.XHwpDocuments.Active_XHwpDocument.DocumentID) != checkpoint["document_id"]:
+                return False, "백업한 문서와 현재 한글 문서가 달라 작업을 중단했습니다."
+            transaction.begin()
+            self._auto_format_transaction = transaction
+            return True, transaction
+        except Exception as exc:
+            if transaction.started:
+                try:
+                    transaction.rollback()
+                except Exception as rollback_error:
+                    return False, f"{exc} 새 결과 정리 실패: {rollback_error}"
+            return False, str(exc)
+
+    def commit_auto_format_rewrite(self, transaction):
+        try:
+            transaction.commit()
+            self._auto_format_transaction = None
+            return True, "원문 교체 완료"
+        except Exception as exc:
+            return False, str(exc)
+
+    def rollback_auto_format_rewrite(self, transaction):
+        try:
+            transaction.rollback()
+            return True, "새 결과를 제거하고 원문을 유지했습니다."
+        except Exception as exc:
+            return False, str(exc)
+        finally:
+            self._auto_format_transaction = None
+
+    def restore_auto_format_checkpoint(self, checkpoint, *, original_range=False):
+        ok, message = self.ensure()
+        if not ok:
+            return False, message
+        try:
+            self._check_checkpoint_document(checkpoint)
+            start = tuple(int(value) for value in checkpoint["start"])
+            end_value = checkpoint["end"] if original_range else self.hwp.GetPos()[:3]
+            end = tuple(int(value) for value in end_value)
+            if start[0] != end[0] or end < start:
+                return False, "자동 복구할 범위를 확인하지 못했습니다."
+            moved = self.hwp.SetPos(*start)
+            if isinstance(moved, (bool, int)) and not moved:
+                return False, "원본 선택 영역의 시작 위치로 이동하지 못했습니다."
+            if end != start:
+                if not self.hwp.SelectText(start[1], start[2], end[1], end[2]):
+                    return False, "자동 복구할 범위를 선택하지 못했습니다."
+                ok, message = self.delete_selection()
+                if not ok:
+                    return False, message
+            return self.insert_file(checkpoint["path"], preserve_document=True)
+        except Exception as exc:
+            if is_rpc_error(exc):
+                self.reset()
+            return False, f"원본 복구 실패: {exc}"
+
+    def _check_checkpoint_document(self, checkpoint):
+        if "_hwp" in checkpoint and self.hwp is not checkpoint["_hwp"]:
+            raise RuntimeError("백업한 한글 연결과 현재 연결이 다릅니다.")
+        if "document_id" in checkpoint and int(self.hwp.XHwpDocuments.Active_XHwpDocument.DocumentID) != checkpoint["document_id"]:
+            raise RuntimeError("백업한 문서와 현재 문서가 달라 복구하지 않았습니다.")
+
+    def capture_page_setup(self):
+        ok, message = self.ensure()
+        if not ok:
+            return False, message
+        try:
+            ps = self.hwp.HParameterSet.HSecDef
+            result = self.hwp.HAction.GetDefault("PageSetup", ps.HSet)
+            if isinstance(result, (bool, int)) and not result:
+                return False, "현재 편집용지 설정을 읽지 못했습니다."
+            fields = ("LeftMargin", "RightMargin", "TopMargin", "BottomMargin", "HeaderLen", "FooterLen")
+            return True, {field: int(getattr(ps.PageDef, field)) for field in fields}
+        except Exception as exc:
+            if is_rpc_error(exc):
+                self.reset()
+            return False, f"현재 편집용지 설정을 읽지 못했습니다: {exc}"
+
+    def restore_page_setup(self, checkpoint):
+        values = checkpoint.get("page_setup")
+        if not isinstance(values, dict):
+            return False, "원래 편집용지 설정이 복구 파일에 없습니다."
+        ok, message = self.ensure()
+        if not ok:
+            return False, message
+        try:
+            self._check_checkpoint_document(checkpoint)
+            start = tuple(int(value) for value in checkpoint["start"])
+            moved = self.hwp.SetPos(*start)
+            if isinstance(moved, (bool, int)) and not moved:
+                return False, "원래 편집용지 위치로 이동하지 못했습니다."
+            ps = self.hwp.HParameterSet.HSecDef
+            result = self.hwp.HAction.GetDefault("PageSetup", ps.HSet)
+            if isinstance(result, (bool, int)) and not result:
+                return False, "원래 편집용지 설정을 불러오지 못했습니다."
+            for field, value in values.items():
+                setattr(ps.PageDef, field, int(value))
+            self._execute_action("PageSetup", ps.HSet)
+            return True, "편집용지를 복구했습니다."
+        except Exception as exc:
+            if is_rpc_error(exc):
+                self.reset()
+            return False, f"편집용지 복구 실패: {exc}"
+
     def run_cmd(self, cmd: str):
         ok, msg = self.ensure()
         if not ok:
             return False, msg
         try:
-            self.hwp.Run(cmd)
+            result = self.hwp.Run(cmd)
+            if isinstance(result, (bool, int)) and not result:
+                return False, f"한글에서 {cmd} 명령을 실행하지 못했습니다."
             return True, "OK"
         except Exception as e:
             if is_rpc_error(e):
@@ -178,183 +375,105 @@ class HwpBridge:
                 return True, cmd
             last_msg = msg
         return False, last_msg or "지원되는 명령이 없습니다."
-    def cleanup_line_spacing(self, adjust_count: int = 3):
+    def cleanup_line_spacing(self, adjust_count: int = 3, cancelled=None):
         ok, msg = self.ensure()
         if not ok:
             return False, msg
-        if win32clipboard is None:
-            return False, "pywin32 clipboard 모듈을 사용할 수 없습니다."
-
+        position_range = self._selected_report_position_range()
+        if not position_range or position_range[0] == position_range[1]:
+            return False, "자간 정리를 적용할 한글 문서 영역을 먼저 블록 지정하세요."
+        engine = LineSpacingCleanup(self.hwp, adjust_count, cancelled)
         try:
-            ok, selected_text = self.get_selected_text()
-            if not ok:
-                return False, "자간 정리를 적용할 한글 문서 영역을 먼저 블록 지정하세요."
-
-            selected_len = len((selected_text or "").strip())
-            if selected_len <= 0:
-                return False, "자간 정리를 적용할 한글 문서 영역을 먼저 블록 지정하세요."
-
-            end_pos = self.hwp.GetPos()
-            self.hwp.HAction.Run("MoveLeft")
-            start_pos = self.hwp.GetPos()
-
-            if self._pos_at_or_after(start_pos, end_pos):
-                return False, "선택 영역의 범위를 확인하지 못했습니다. 위에서 아래 방향으로 블록 지정한 뒤 다시 실행하세요."
-
-            return self._cleanup_line_spacing_between_positions(adjust_count, end_pos, selected_len)
-        except Exception as e:
-            if is_rpc_error(e):
-                self.reset()
-            return False, f"자간 정리 실패: {e}"
-
-    def cleanup_current_cell_line_spacing(self, adjust_count: int = 3):
-        ok, msg = self.ensure()
-        if not ok:
-            return False, msg
-        try:
-            self.run_first_supported(["Cancel", "CloseEx", "Esc"])
-            self.hwp.HAction.Run("MoveListBegin")
-            start_pos = self.hwp.GetPos()
+            engine.process_range(*position_range)
+            return True, engine.message()
+        except Exception as error:
             try:
-                self.hwp.HAction.Run("MoveListEnd")
-            except Exception:
-                self.hwp.HAction.Run("MoveSelListEnd")
-                self.hwp.HAction.Run("Cancel")
-            end_pos = self.hwp.GetPos()
-            self.hwp.SetPos(start_pos[0], start_pos[1], start_pos[2])
-        except Exception as e:
-            return False, f"현재 셀 범위를 확인하지 못했습니다: {e}"
+                engine.rollback()
+            except Exception as recovery_error:
+                return False, f"자간 정리 실패: {error}. {recovery_error}"
+            return False, f"자간 정리 취소: {error}"
+        finally:
+            self._restore_selected_report_range(position_range)
 
-        return self._cleanup_line_spacing_between_positions(adjust_count, end_pos, 80)
+    def _current_cell_spacing_range(self):
+        self.hwp.Run("Cancel")
+        LineSpacingCleanup.require(self.hwp.Run("MoveListBegin"), "셀 시작으로 이동하지 못했습니다.")
+        start = tuple(self.hwp.GetPos()[:3])
+        LineSpacingCleanup.require(self.hwp.Run("MoveListEnd"), "셀 끝으로 이동하지 못했습니다.")
+        end = tuple(self.hwp.GetPos()[:3])
+        if start[0] != end[0] or end < start:
+            raise RuntimeError("현재 셀 범위를 확인하지 못했습니다.")
+        return start, end
 
-    def cleanup_cell_range_line_spacing(self, start_col, start_row, end_col, end_row, adjust_count: int = 3):
+    def _restore_spacing_cursor(self, position):
+        try:
+            self.hwp.Run("Cancel")
+            if position:
+                return bool(self.hwp.SetPos(*position))
+        except Exception:
+            return False
+        return True
+
+    def cleanup_current_cell_line_spacing(self, adjust_count: int = 3, cancelled=None):
         ok, msg = self.ensure()
         if not ok:
             return False, msg
+        engine = LineSpacingCleanup(self.hwp, adjust_count, cancelled)
+        original_position = None
         try:
+            original_position = tuple(self.hwp.GetPos()[:3])
+            engine.process_range(*self._current_cell_spacing_range())
+            return True, engine.message()
+        except Exception as error:
+            try:
+                engine.rollback()
+            except Exception as recovery_error:
+                return False, f"자간 정리 실패: {error}. {recovery_error}"
+            return False, f"자간 정리 취소: {error}"
+        finally:
+            self._restore_spacing_cursor(original_position)
+
+    def cleanup_cell_range_line_spacing(self, start_col, start_row, end_col, end_row, adjust_count: int = 3, cancelled=None):
+        ok, msg = self.ensure()
+        if not ok:
+            return False, msg
+        engine = LineSpacingCleanup(self.hwp, adjust_count, cancelled)
+        original_position = None
+        try:
+            original_position = tuple(self.hwp.GetPos()[:3])
             left_col = min(int(start_col), int(end_col))
             right_col = max(int(start_col), int(end_col))
             top_row = min(int(start_row), int(end_row))
             bottom_row = max(int(start_row), int(end_row))
             self.cell_validate_range_no_merged_cells(left_col, top_row, right_col, bottom_row)
 
-            total_decreased = 0
-            total_increased = 0
             cell_count = 0
 
             for r in range(top_row, bottom_row + 1):
                 for c in range(left_col, right_col + 1):
+                    engine.check_cancel()
                     self.cell_move_to_addr(c, r)
-                    ok_cell, msg_cell = self.cleanup_current_cell_line_spacing(adjust_count)
-                    if not ok_cell:
-                        return False, msg_cell
-                    m = re.search(r"줄임\s+(\d+)곳,\s+늘림\s+(\d+)곳", msg_cell)
-                    if m:
-                        total_decreased += int(m.group(1))
-                        total_increased += int(m.group(2))
+                    engine.process_range(*self._current_cell_spacing_range())
                     cell_count += 1
 
-            return True, f"표 셀 자간 정리 완료: {cell_count}개 셀, 줄임 {total_decreased}곳, 늘림 {total_increased}곳"
-        except Exception as e:
-            if is_rpc_error(e):
-                self.reset()
-            return False, f"표 셀 자간 정리 실패: {e}"
-
-    def _pos_key(self, pos):
-        try:
-            return tuple(int(v) for v in pos[:3])
-        except Exception:
-            return None
-
-    def _pos_at_or_after(self, pos, target_pos):
-        a = self._pos_key(pos)
-        b = self._pos_key(target_pos)
-        if a is None or b is None:
-            return False
-        return a >= b
-
-    def _cleanup_line_spacing_between_positions(self, adjust_count: int, end_pos, selected_len: int):
-        adjust_count = max(1, int(adjust_count))
-        decreased = 0
-        increased = 0
-        x = 0
-        old_clipboard_text = get_clipboard_text()
-
-        def run(action_id: str):
-            self.hwp.HAction.Run(action_id)
-
-        def copy_selected_text() -> str:
-            run("Copy")
-            return get_clipboard_text()
-
-        try:
-            max_iterations = max(50, int(selected_len) * 4)
-            for _ in range(max_iterations):
-                try:
-                    if self._pos_at_or_after(self.hwp.GetPos(), end_pos):
-                        break
-                except Exception:
-                    pass
-
-                run("MoveLineEnd")
-                run("MoveSelLeft")
-                a = copy_selected_text()
-
-                if a == " " or a == ".":
-                    run("MoveRight")
-                    x += 1
-                else:
-                    run("MoveSelNextWord")
-                    b = copy_selected_text()
-                    if a == b:
-                        run("MoveRight")
-                        x += 1
-                    else:
-                        if 2 <= len(b) <= 3:
-                            x = 0
-                            run("MoveUp")
-                            run("MoveSelLineEnd")
-                            for _ in range(adjust_count):
-                                run("CharShapeSpacingDecrease")
-                            run("MoveLineBegin")
-                            decreased += 1
-                        else:
-                            run("MoveLineBegin")
-                            run("MoveSelPrevWord")
-                            c = copy_selected_text()
-                            if len(c) == 1:
-                                x = 0
-                                run("MoveSelLineBegin")
-                                for _ in range(adjust_count):
-                                    run("CharShapeSpacingIncrease")
-                                run("MoveRight")
-                                increased += 1
-
-                if x > 15:
-                    before = self.hwp.KeyIndicator()
-                    run("MoveDown")
-                    after = self.hwp.KeyIndicator()
-                    if before == after or self._pos_at_or_after(self.hwp.GetPos(), end_pos):
-                        break
-            else:
-                return False, "선택 영역 처리 횟수가 너무 많아 자간 정리를 중단했습니다. 영역을 나누어 다시 실행하세요."
-
-            return True, f"자간 정리 완료: 줄임 {decreased}곳, 늘림 {increased}곳"
-        except Exception as e:
-            if is_rpc_error(e):
-                self.reset()
-            return False, f"자간 정리 실패: {e}"
-        finally:
+            return True, f"표 셀 {cell_count}개, {engine.message()}"
+        except Exception as error:
             try:
-                set_clipboard_text(old_clipboard_text)
-            except Exception:
-                pass
+                engine.rollback()
+            except Exception as recovery_error:
+                return False, f"표 셀 자간 정리 실패: {error}. {recovery_error}"
+            return False, f"표 셀 자간 정리 취소: {error}"
+        finally:
+            self._restore_spacing_cursor(original_position)
+
     def insert_paragraph_break(self):
         ok, msg = self.ensure()
         if not ok:
             return False, msg
         try:
-            self.hwp.Run("BreakPara")
+            result = self.hwp.Run("BreakPara")
+            if isinstance(result, (bool, int)) and not result:
+                return self.insert_text("\r\n")
             return True, "OK"
         except Exception:
             return self.insert_text("\r\n")
@@ -458,9 +577,114 @@ class HwpBridge:
                 return False, msg
             last_msg = msg
         return True, last_msg or "OK"
+    def _move_left_n(self, n: int):
+        last_msg = ""
+        for _ in range(max(0, int(n))):
+            ok, msg = self.run_first_supported(["MoveLeft"])
+            if not ok:
+                return False, msg
+            last_msg = msg
+        return True, last_msg or "OK"
+    def _select_last_text(self, text: str):
+        if not text:
+            return False, "찾을 내부 표시가 비어 있습니다."
+        try:
+            self.run_first_supported(["MoveDocEnd"])
+            ps = self.hwp.HParameterSet.HFindReplace
+            self.hwp.HAction.GetDefault("RepeatFind", ps.HSet)
+            ps.FindString = text
+            try:
+                ps.Direction = self.hwp.FindDir("Backward")
+            except Exception:
+                ps.Direction = 1
+            for key, value in (
+                ("IgnoreMessage", 1),
+                ("IgnoreFindString", 0),
+                ("WholeWordOnly", 0),
+                ("UseWildCards", 0),
+                ("SeveralWords", 0),
+                ("AllWordForms", 0),
+                ("MatchCase", 1),
+                ("ReplaceMode", 0),
+                ("FindRegExp", 0),
+                ("FindJaso", 0),
+                ("FindType", 1),
+            ):
+                try:
+                    setattr(ps, key, value)
+                except Exception:
+                    pass
+            found = self.hwp.HAction.Execute("RepeatFind", ps.HSet)
+            if isinstance(found, (bool, int)) and not found:
+                return False, "등록된 예시 블록에서 내부 표시를 찾지 못했습니다."
+            return True, "OK"
+        except Exception as exc:
+            return False, f"등록된 예시 블록의 글자 위치 찾기 실패: {exc}"
     def _delete_once(self):
         return self.run_first_supported(["Delete", "DeleteBack", "BackSpace"])
-    def insert_document_title_box(self, filepath_abs: str, title_text: str):
+
+    def insert_auto_title_template(
+        self,
+        filepath_abs: str,
+        replacements,
+        *,
+        font_name: str | None = None,
+        font_size_pt: int | None = None,
+        bold: bool | None = None,
+        append_paragraph_break: bool = True,
+    ):
+        anchor = f"__JB_AUTO_TITLE_END_{time.time_ns()}__"
+        ok, msg = self.insert_text(anchor)
+        if not ok:
+            return False, msg
+        ok, msg = self._move_left_n(len(anchor))
+        if not ok:
+            return False, f"제목 예시 삽입 위치 준비 실패: {msg}"
+        ok, msg = self.insert_file(filepath_abs)
+        if not ok:
+            return False, msg
+        time.sleep(0.08)
+
+        for token, replacement in dict(replacements or {}).items():
+            token = str(token or "")
+            if not token:
+                continue
+            ok, msg = self._select_last_text(token)
+            if not ok:
+                return False, msg
+            if font_name and font_size_pt is not None:
+                ok, msg = self.set_current_charshape(
+                    font_name, int(font_size_pt), bold=bool(bold)
+                )
+                if not ok:
+                    return False, msg
+            replacement = str(replacement or "")
+            if replacement:
+                ok, msg = self.insert_text(replacement)
+            else:
+                ok, msg = self._delete_once()
+            if not ok:
+                return False, msg
+
+        ok, msg = self._select_last_text(anchor)
+        if not ok:
+            return False, "제목 예시 삽입 후 커서 위치를 복구하지 못했습니다."
+        ok, msg = self._delete_once()
+        if not ok:
+            return False, msg
+        if append_paragraph_break:
+            self.insert_paragraph_break()
+        return True, "등록한 제목 예시 삽입 완료"
+    def insert_document_title_box(
+        self,
+        filepath_abs: str,
+        title_text: str,
+        *,
+        font_name: str | None = None,
+        font_size_pt: int | None = None,
+        bold: bool | None = None,
+        append_paragraph_break: bool = True,
+    ):
         ok, msg = self.insert_file(filepath_abs)
         if not ok:
             return False, msg
@@ -468,16 +692,30 @@ class HwpBridge:
         ok, msg = self._move_right_n(2)
         if not ok:
             return False, f"제목박스 진입 실패: {msg}"
-        ok, msg = self.set_current_charshape("HY헤드라인M", 23, bold=True)
-        if not ok:
-            return False, msg
+        if font_name and font_size_pt is not None:
+            ok, msg = self.set_current_charshape(
+                font_name, int(font_size_pt), bold=bool(bold)
+            )
+            if not ok:
+                return False, msg
         ok, msg = self.insert_text(title_text)
         if not ok:
             return False, msg
         self._move_right_n(2)
-        self.insert_paragraph_break()
+        if append_paragraph_break:
+            self.insert_paragraph_break()
         return True, "문서제목 박스 삽입 완료"
-    def insert_section_title_box(self, filepath_abs: str, number_text: str, title_text: str):
+    def insert_section_title_box(
+        self,
+        filepath_abs: str,
+        number_text: str,
+        title_text: str,
+        *,
+        font_name: str | None = None,
+        font_size_pt: int | None = None,
+        bold: bool | None = None,
+        append_paragraph_break: bool = True,
+    ):
         ok, msg = self.insert_file(filepath_abs)
         if not ok:
             return False, msg
@@ -486,23 +724,30 @@ class HwpBridge:
         if not ok:
             return False, f"소제목박스 첫 칸 진입 실패: {msg}"
         self._delete_once()
-        ok, msg = self.set_current_charshape("HY헤드라인M", 16, bold=False)
-        if not ok:
-            return False, msg
+        if font_name and font_size_pt is not None:
+            ok, msg = self.set_current_charshape(
+                font_name, int(font_size_pt), bold=bool(bold)
+            )
+            if not ok:
+                return False, msg
         ok, msg = self.insert_text(number_text)
         if not ok:
             return False, msg
         ok, msg = self._move_right_n(3)
         if not ok:
             return False, f"소제목박스 제목 칸 이동 실패: {msg}"
-        ok, msg = self.set_current_charshape("HY헤드라인M", 16, bold=False)
-        if not ok:
-            return False, msg
+        if font_name and font_size_pt is not None:
+            ok, msg = self.set_current_charshape(
+                font_name, int(font_size_pt), bold=bool(bold)
+            )
+            if not ok:
+                return False, msg
         ok, msg = self.insert_text(title_text)
         if not ok:
             return False, msg
         self._move_right_n(1)
-        self.insert_paragraph_break()
+        if append_paragraph_break:
+            self.insert_paragraph_break()
         return True, "제목 박스 삽입 완료"
     def insert_picture_clipboard(self, filepath_abs: str):
         ok, msg = self.ensure()
@@ -579,7 +824,7 @@ class HwpBridge:
             page_def = ps.PageDef
             for key, attr in fields.items():
                 setattr(page_def, attr, self._mili_to_unit(values[key]))
-            self.hwp.HAction.Execute("PageSetup", ps.HSet)
+            self._execute_action("PageSetup", ps.HSet)
             return True, "사용자 편집용지 여백 적용 완료"
         except KeyError:
             return False, "저장된 편집용지 여백 정보가 올바르지 않습니다."
@@ -601,7 +846,7 @@ class HwpBridge:
             ps.PageDef.BottomMargin= self._mili_to_unit(15.0)
             ps.PageDef.HeaderLen   = self._mili_to_unit(10.0)
             ps.PageDef.FooterLen   = self._mili_to_unit(10.0)
-            self.hwp.HAction.Execute("PageSetup", ps.HSet)
+            self._execute_action("PageSetup", ps.HSet)
             return True, "편집용지 적용 완료"
         except Exception as e:
             if is_rpc_error(e):
@@ -718,7 +963,7 @@ class HwpBridge:
             last_error = None
             for action_name in ["CellFill", loaded_action, "CellBorderFill", "BorderFill"]:
                 try:
-                    self.hwp.HAction.Execute(action_name, ps.HSet)
+                    self._execute_action(action_name, ps.HSet)
                     return True, "셀 배경색 적용 완료"
                 except Exception as e:
                     last_error = e
@@ -756,7 +1001,7 @@ class HwpBridge:
             last_error = None
             for action_name in ["CellFill", loaded_action, "CellBorderFill", "BorderFill"]:
                 try:
-                    self.hwp.HAction.Execute(action_name, ps.HSet)
+                    self._execute_action(action_name, ps.HSet)
                     return True, "셀 배경색 제거 완료"
                 except Exception as e:
                     last_error = e
@@ -801,13 +1046,13 @@ class HwpBridge:
             para_shape = self.hwp.HParameterSet.HParaShape
             self.hwp.HAction.GetDefault("ParagraphShape", para_shape.HSet)
             self._clear_fill_attr(para_shape.BorderFill.FillAttr)
-            self.hwp.HAction.Execute("ParagraphShape", para_shape.HSet)
+            self._execute_action("ParagraphShape", para_shape.HSet)
 
             char_shape = self.hwp.HParameterSet.HCharShape
             self.hwp.HAction.GetDefault("CharShape", char_shape.HSet)
             char_shape.TextColor = self._rgb_color(0, 0, 0)
             char_shape.ShadeColor = 0xFFFFFFFF
-            self.hwp.HAction.Execute("CharShape", char_shape.HSet)
+            self._execute_action("CharShape", char_shape.HSet)
             return True, "문단 배경·글자색·음영색 정리 완료"
         except Exception as e:
             if is_rpc_error(e):
@@ -831,7 +1076,7 @@ class HwpBridge:
             ps = self.hwp.HParameterSet.HParaShape
             self.hwp.HAction.GetDefault("ParagraphShape", ps.HSet)
             self._clear_fill_attr(ps.BorderFill.FillAttr)
-            self.hwp.HAction.Execute("ParagraphShape", ps.HSet)
+            self._execute_action("ParagraphShape", ps.HSet)
             return True, "문단 배경 면색 제거 완료"
         except Exception as e:
             if is_rpc_error(e):
@@ -844,7 +1089,7 @@ class HwpBridge:
             ps = self.hwp.HParameterSet.HParaShape
             self.hwp.HAction.GetDefault("ParagraphShape", ps.HSet)
             self._clear_fill_attr(ps.BorderFill.FillAttr)
-            self.hwp.HAction.Execute("ParagraphShape", ps.HSet)
+            self._execute_action("ParagraphShape", ps.HSet)
             return True, "문단 배경 면색 제거 완료"
         except Exception as e:
             if is_rpc_error(e):
@@ -856,6 +1101,7 @@ class HwpBridge:
         if not ok:
             return False, msg
         try:
+
             distribute_commands = {
                 "행높이같게": ("TableDistributeCellHeight", "행 높이 같게"),
                 "열너비같게": ("TableDistributeCellWidth", "열 너비 같게"),
@@ -1005,10 +1251,10 @@ class HwpBridge:
             else:
                 return False, f"알 수 없는 표 작업 action_id: {action_id}"
             try:
-                self.hwp.HAction.Execute(execute_action, ps.HSet)
+                self._execute_action(execute_action, ps.HSet)
             except Exception:
                 if execute_action != "CellBorder":
-                    self.hwp.HAction.Execute("CellBorder", ps.HSet)
+                    self._execute_action("CellBorder", ps.HSet)
                 else:
                     raise
             return True, "표 작업 적용 완료"
@@ -1029,7 +1275,16 @@ class HwpBridge:
             pass
         # fallback: 많은 환경에서 1pt = 100 단위로 동작
         return int(float(pt) * 100)
-    def apply_charshape(self, font_name: str | None = None, font_size_pt: int | None = None, font_color_rgb: tuple[int,int,int] | None = None, bold: bool | None = None):
+    def has_active_text_selection(self):
+        ok, _ = self.ensure()
+        if not ok:
+            return False
+        try:
+            selection_mode = int(getattr(self.hwp, "SelectionMode", 0) or 0)
+            return bool(selection_mode & 0x0F)
+        except Exception:
+            return False
+    def apply_charshape(self, font_name: str | None = None, font_size_pt: int | None = None, font_color_rgb: tuple[int,int,int] | None = None, bold: bool | None = None, script_mode: str | None = None):
         """
         선택 영역 또는 이후 입력될 글자에 글꼴/글자크기/색상/굵게 적용.
         """
@@ -1075,12 +1330,121 @@ class HwpBridge:
                         setattr(ps, attr, 700 if bold else 400)
                     except Exception:
                         pass
-            self.hwp.HAction.Execute("CharShape", ps.HSet)
+            if script_mode is not None:
+                for key, value in script_parameters(script_mode).items():
+                    setattr(ps, key, value)
+            self._execute_action("CharShape", ps.HSet)
             return True, "글자 적용 완료"
         except Exception as e:
             if is_rpc_error(e):
                 self.reset()
             return False, f"글자 적용 실패: {e}"
+
+    def _select_recorded_cell_block(self, left_col, top_row, right_col, bottom_row):
+        """Rebuild one rectangular cell block from recorded cell addresses."""
+        self._cell_focus_hwp()
+        self._cell_try_cmd("Cancel", 0.005)
+        self.cell_move_to_addr(left_col, top_row)
+        if not self._cell_try_cmd("TableCellBlock", 0.005):
+            return False
+
+        width = int(right_col) - int(left_col)
+        height = int(bottom_row) - int(top_row)
+        if width == 0 and height == 0:
+            return True
+        if not self._cell_try_cmd("TableCellBlockExtend", 0.005):
+            self._cell_try_cmd("Cancel", 0.005)
+            return False
+
+        try:
+            for _ in range(width):
+                self.cell_move_right()
+            for _ in range(height):
+                self.cell_move_down()
+            return True
+        except Exception:
+            self._cell_try_cmd("Cancel", 0.005)
+            return False
+
+    def apply_charshape_to_cell_range(
+        self,
+        start_col,
+        start_row,
+        end_col,
+        end_row,
+        *,
+        font_name: str | None = None,
+        font_size_pt: int | None = None,
+        font_color_rgb: tuple[int, int, int] | None = None,
+        bold: bool | None = None,
+        script_mode: str | None = None,
+    ):
+        """Apply character formatting to a recorded table-cell rectangle."""
+        ok, msg = self.ensure()
+        if not ok:
+            return False, msg
+        try:
+            left_col = min(int(start_col), int(end_col))
+            right_col = max(int(start_col), int(end_col))
+            top_row = min(int(start_row), int(end_row))
+            bottom_row = max(int(start_row), int(end_row))
+            row_count = bottom_row - top_row + 1
+            col_count = right_col - left_col + 1
+            cell_count = row_count * col_count
+            script_args = {"script_mode": script_mode} if script_mode is not None else {}
+
+            if self._select_recorded_cell_block(
+                left_col,
+                top_row,
+                right_col,
+                bottom_row,
+            ):
+                ok_block, msg_block = self.apply_charshape(
+                    font_name=font_name,
+                    font_size_pt=font_size_pt,
+                    font_color_rgb=font_color_rgb,
+                    bold=bold,
+                    **script_args,
+                )
+                if ok_block:
+                    return True, f"표 셀 글자 적용 완료: {cell_count}개 셀"
+                self._cell_try_cmd("Cancel", 0.005)
+
+            self._cell_focus_hwp()
+            self.cell_validate_range_no_merged_cells(left_col, top_row, right_col, bottom_row)
+            self.cell_move_to_addr(left_col, top_row)
+
+            applied = 0
+            for row_offset in range(row_count):
+                for col_offset in range(col_count):
+                    start_pos = self.cell_select_current_text()
+                    try:
+                        ok_cell, msg_cell = self.apply_charshape(
+                            font_name=font_name,
+                            font_size_pt=font_size_pt,
+                            font_color_rgb=font_color_rgb,
+                            bold=bold,
+                            **script_args,
+                        )
+                        if not ok_cell:
+                            return False, msg_cell
+                        applied += 1
+                    finally:
+                        self._cell_try_cmd("Cancel", 0.005)
+                        self._cell_set_pos(start_pos)
+
+                    if col_offset < col_count - 1:
+                        self.cell_move_right()
+                if row_offset < row_count - 1:
+                    self.cell_move_down()
+                    for _ in range(col_count - 1):
+                        self.cell_move_left()
+
+            return True, f"표 셀 글자 적용 완료: {applied}개 셀"
+        except Exception as e:
+            if is_rpc_error(e):
+                self.reset()
+            return False, f"표 셀 글자 적용 실패: {e}"
 
     def reset_selected_char_spacing(self):
         """블록 지정된 영역의 글자 자간을 0으로 초기화한다."""
@@ -1108,7 +1472,7 @@ class HwpBridge:
                     ps.HSet.SetItem(attr, 0)
                 except Exception:
                     pass
-            self.hwp.HAction.Execute("CharShape", ps.HSet)
+            self._execute_action("CharShape", ps.HSet)
             return True, "자간 초기화 완료"
         except Exception as e:
             if is_rpc_error(e):
@@ -1171,6 +1535,8 @@ class HwpBridge:
         start, end = position_range
         native_table_positions = []
         seen_table_positions = set()
+        native_object_positions = []
+        controls_complete = True
 
         try:
             ctrl = getattr(self.hwp, "HeadCtrl", None)
@@ -1181,19 +1547,27 @@ class HwpBridge:
                     next_ctrl = ctrl.Next
                 except Exception:
                     next_ctrl = None
+                    controls_complete = False
                 try:
-                    if str(getattr(ctrl, "CtrlID", "") or "").lower() == "tbl":
+                    ctrl_id = str(getattr(ctrl, "CtrlID", "") or "").lower()
+                    if ctrl_id not in {"secd", "cold"}:
                         anchor_set = ctrl.GetAnchorPos(0)
                         anchor_pos = self._parameter_set_position(anchor_set)
-                        if anchor_pos is not None and start <= anchor_pos <= end:
-                            if anchor_pos not in seen_table_positions:
+                        if anchor_pos is None:
+                            controls_complete = False
+                        elif start <= anchor_pos < end:
+                            if ctrl_id == "tbl" and anchor_pos not in seen_table_positions:
                                 seen_table_positions.add(anchor_pos)
                                 native_table_positions.append(anchor_pos)
+                            elif ctrl_id != "tbl":
+                                native_object_positions.append(anchor_pos)
                 except Exception:
-                    pass
+                    controls_complete = False
                 ctrl = next_ctrl
+            else:
+                controls_complete = False
 
-            if not self.hwp.InitScan(0, 0x00FF):
+            if not self.hwp.InitScan(0, 0x00FF, 0, 0, 0, 0):
                 return False, "선택 영역의 일반 문단 검색을 시작하지 못했습니다."
 
             paragraph_map = {}
@@ -1245,6 +1619,8 @@ class HwpBridge:
             return True, {
                 "paragraphs": paragraphs,
                 "native_table_positions": native_table_positions,
+                "native_object_positions": native_object_positions,
+                "controls_complete": controls_complete,
             }
         except Exception as exc:
             if is_rpc_error(exc):
@@ -1256,16 +1632,17 @@ class HwpBridge:
             except Exception:
                 pass
             try:
-                self._restore_selected_report_range(position_range)
+                if not self._restore_selected_report_range(position_range):
+                    return False, "원본 블록을 다시 지정하지 못해 작업을 중단했습니다."
             except Exception:
-                pass
+                return False, "원본 블록을 다시 지정하지 못해 작업을 중단했습니다."
 
     def apply_inferred_report_paragraphs(
         self,
         paragraphs,
         items,
-        title_box_file=None,
-        section_box_file=None,
+        title_template=None,
+        section_template=None,
         progress=None,
         cancelled=None,
     ):
@@ -1295,28 +1672,26 @@ class HwpBridge:
                 para_id = int(paragraph["para_id"])
                 start_pos = int(paragraph["start_pos"])
                 end_pos = int(paragraph["end_pos"])
-                inserted_prefix = str(item.get("inserted_prefix") or "")
-                if inserted_prefix:
-                    self.hwp.SetPos(list_id, para_id, start_pos)
-                    ok_prefix, msg_prefix = self.insert_text(inserted_prefix)
-                    if not ok_prefix:
-                        return False, msg_prefix
-                    end_pos += len(inserted_prefix)
                 self.hwp.SetPos(list_id, para_id, start_pos)
                 selected = self.hwp.SelectText(para_id, start_pos, para_id, end_pos)
                 if selected is False:
                     return False, f"{index + 1}번째 문단을 선택하지 못했습니다."
-                ok_shape, msg_shape = self.apply_charshape(
+                ok_delete, msg_delete = self.delete_selection()
+                if not ok_delete:
+                    return False, msg_delete
+                ok_insert, msg_insert = self.insert_report_line(
+                    str(item.get("text") or ""),
                     font_name=style["font"],
                     font_size_pt=int(style["size"]),
                     bold=bool(style.get("bold", False)),
                 )
-                if not ok_shape:
-                    return False, msg_shape
-                caret_offset = int(item.get("source_caret_offset") or 0)
-                if tag in ("본문", "참고") and caret_offset > 0:
-                    self.hwp.SetPos(list_id, para_id, min(end_pos, start_pos + caret_offset))
-                    ok_indent, msg_indent = self.paragraph_shape_indent_at_caret()
+                if not ok_insert:
+                    return False, msg_insert
+                caret_offset = style.get("caret_indent_at")
+                if tag in ("본문", "참고") and caret_offset is not None:
+                    ok_indent, msg_indent = self.apply_indent_at_caret_for_current_para(
+                        int(caret_offset)
+                    )
                     if not ok_indent:
                         return False, msg_indent
 
@@ -1339,20 +1714,75 @@ class HwpBridge:
                 if not ok_delete:
                     return False, msg_delete
                 if item.get("tag") == "문서제목":
-                    if not title_box_file:
+                    if not title_template:
                         return False, "서식 탭에서 '제목박스' 파일을 찾지 못했습니다."
-                    ok_insert, msg_insert = self.insert_document_title_box(
-                        title_box_file,
-                        str(item.get("text") or "").strip(),
-                    )
+                    style = item.get("style") or {}
+                    if title_template.get("mode") == "plain":
+                        ok_insert, msg_insert = self.insert_report_line(
+                            str(item.get("text") or "").strip(),
+                            font_name=str(style.get("font") or ""),
+                            font_size_pt=int(style.get("size") or 13),
+                            bold=bool(style.get("bold", False)),
+                        )
+                    elif title_template.get("mode") == "placeholder":
+                        ok_insert, msg_insert = self.insert_auto_title_template(
+                            str(title_template.get("file_path") or ""),
+                            {
+                                str(title_template.get("title_token") or ""):
+                                    str(item.get("text") or "").strip(),
+                            },
+                            font_name=str(style.get("font") or ""),
+                            font_size_pt=int(style.get("size") or 13),
+                            bold=bool(style.get("bold", False)),
+                        )
+                    else:
+                        ok_insert, msg_insert = self.insert_document_title_box(
+                            str(title_template.get("file_path") or ""),
+                            str(item.get("text") or "").strip(),
+                            font_name=str(style.get("font") or ""),
+                            font_size_pt=int(style.get("size") or 13),
+                            bold=bool(style.get("bold", False)),
+                        )
                 else:
-                    if not section_box_file:
+                    if not section_template:
                         return False, "서식 탭에서 '소제목박스' 파일을 찾지 못했습니다."
-                    ok_insert, msg_insert = self.insert_section_title_box(
-                        section_box_file,
-                        str(item.get("number_text") or ""),
-                        str(item.get("body_text") or item.get("text") or "").strip(),
-                    )
+                    style = item.get("style") or {}
+                    number_text = str(item.get("number_text") or "")
+                    body_text = str(
+                        item.get("body_text") or item.get("text") or ""
+                    ).strip()
+                    if section_template.get("mode") == "plain":
+                        line_text = str(item.get("text") or "").strip() or " ".join(
+                            part for part in (number_text.strip(), body_text) if part
+                        )
+                        ok_insert, msg_insert = self.insert_report_line(
+                            line_text,
+                            font_name=str(style.get("font") or ""),
+                            font_size_pt=int(style.get("size") or 13),
+                            bold=bool(style.get("bold", False)),
+                        )
+                    elif section_template.get("mode") == "placeholder":
+                        ok_insert, msg_insert = self.insert_auto_title_template(
+                            str(section_template.get("file_path") or ""),
+                            {
+                                str(section_template.get("number_token") or ""):
+                                    number_text,
+                                str(section_template.get("title_token") or ""):
+                                    body_text,
+                            },
+                            font_name=str(style.get("font") or ""),
+                            font_size_pt=int(style.get("size") or 13),
+                            bold=bool(style.get("bold", False)),
+                        )
+                    else:
+                        ok_insert, msg_insert = self.insert_section_title_box(
+                            str(section_template.get("file_path") or ""),
+                            number_text,
+                            body_text,
+                            font_name=str(style.get("font") or ""),
+                            font_size_pt=int(style.get("size") or 13),
+                            bold=bool(style.get("bold", False)),
+                        )
                 if not ok_insert:
                     return False, msg_insert
             return True, f"표 밖 문단 {total}개 서식 적용 완료"
@@ -1361,7 +1791,15 @@ class HwpBridge:
                 self.reset()
             return False, f"표 밖 문단 서식 적용 실패: {exc}"
 
-    def format_native_report_tables(self, table_positions, progress=None, cancelled=None):
+    def format_native_report_tables(
+        self,
+        table_positions,
+        font_name: str = "굴림체",
+        font_size_pt: int = 12,
+        bold: bool = False,
+        progress=None,
+        cancelled=None,
+    ):
         ok, msg = self.ensure()
         if not ok:
             return False, msg
@@ -1384,9 +1822,9 @@ class HwpBridge:
                 if not ok_para:
                     return False, msg_para
                 ok_char, msg_char = self.apply_charshape(
-                    font_name="굴림체",
-                    font_size_pt=12,
-                    bold=False,
+                    font_name=font_name,
+                    font_size_pt=font_size_pt,
+                    bold=bold,
                 )
                 if not ok_char:
                     return False, msg_char
@@ -1449,9 +1887,13 @@ class HwpBridge:
             return False, msg
         try:
             try:
-                self.hwp.Run("Delete")
+                result = self.hwp.Run("Delete")
+                if isinstance(result, (bool, int)) and not result:
+                    raise RuntimeError("한글에서 선택 영역을 삭제하지 못했습니다.")
             except Exception:
-                self.hwp.Run("Cut")
+                result = self.hwp.Run("Cut")
+                if isinstance(result, (bool, int)) and not result:
+                    raise RuntimeError("한글에서 선택 영역을 잘라내지 못했습니다.")
             return True, "선택 영역 삭제 완료"
         except Exception as e:
             if is_rpc_error(e):
@@ -1544,7 +1986,7 @@ class HwpBridge:
                 ps.Alignment = 0
             except Exception:
                 pass
-            self.hwp.HAction.Execute("ParaShape", ps.HSet)
+            self._execute_action("ParaShape", ps.HSet)
             return True, "문단 모양 초기화 완료"
         except Exception as e:
             if is_rpc_error(e):
@@ -1585,7 +2027,7 @@ class HwpBridge:
                 tc.HeightValue = self._mili_to_unit(0.0)
             except Exception:
                 pass
-            self.hwp.HAction.Execute("TableStringToTable", ps.HSet)
+            self._execute_action("TableStringToTable", ps.HSet)
             return True, "문자열을 표로 변환 완료"
         except Exception as e:
             if is_rpc_error(e):
@@ -1632,7 +2074,13 @@ class HwpBridge:
             self.run_first_supported(["Cancel", "CloseEx", "Esc"])
         return False, "표 전체 선택 실패"
 
-    def insert_pipe_table(self, rows_data, font_name: str = "굴림체", font_size_pt: int = 12):
+    def insert_pipe_table(
+        self,
+        rows_data,
+        font_name: str = "굴림체",
+        font_size_pt: int = 12,
+        bold: bool = False,
+    ):
         if not rows_data:
             return True, "SKIP"
         text_lines = ["\t".join([str(c).strip() for c in row]) for row in rows_data]
@@ -1646,7 +2094,7 @@ class HwpBridge:
         ok, msg = self.select_recent_paragraphs(len(text_lines))
         if not ok:
             return False, msg
-        self.apply_charshape(font_name=font_name, font_size_pt=font_size_pt, bold=False)
+        self.apply_charshape(font_name=font_name, font_size_pt=font_size_pt, bold=bold)
 
         ok, msg = self.convert_selected_text_to_table(len(rows_data), max(len(r) for r in rows_data))
         if not ok:
@@ -1656,8 +2104,8 @@ class HwpBridge:
         if ok_sel:
             self.set_selected_table_treat_as_char(True)
             self.reset_selected_parashape()
-            # 표 전체 선택 상태에서 한 번 더 굴림체 12pt를 보정 적용
-            self.apply_charshape(font_name=font_name, font_size_pt=font_size_pt, bold=False)
+            # 표 전체 선택 상태에서 선택한 표 글자 서식을 한 번 더 보정 적용
+            self.apply_charshape(font_name=font_name, font_size_pt=font_size_pt, bold=bold)
             for aid in [
                 "왼쪽바깥선없애기",
                 "오른쪽바깥선없애기",
@@ -1906,11 +2354,13 @@ class HwpBridge:
         hwp = self._cell_get_hwp()
         try:
             if text == "":
-                hwp.Run("Delete")
+                result = hwp.Run("Delete")
+                if isinstance(result, (bool, int)) and not result:
+                    raise RuntimeError("셀의 기존 문자를 삭제하지 못했습니다.")
                 return
             hwp.HAction.GetDefault("InsertText", hwp.HParameterSet.HInsertText.HSet)
             hwp.HParameterSet.HInsertText.Text = text
-            hwp.HAction.Execute("InsertText", hwp.HParameterSet.HInsertText.HSet)
+            self._execute_action("InsertText", hwp.HParameterSet.HInsertText.HSet)
         except Exception as e:
             if is_rpc_error(e):
                 self.reset()
@@ -1949,6 +2399,12 @@ class HwpBridge:
         self.cell_insert_text_over_selection(new_text)
         self._cell_try_cmd("MoveListBegin", 0.005)
         return True
+
+    def cell_trim_current(self):
+        return CellEdgeEditor(self._cell_get_hwp()).trim()
+
+    def cell_affix_current(self, value, *, at_end=False):
+        return CellEdgeEditor(self._cell_get_hwp()).affix(value, at_end=at_end)
 
     def _cell_read_int_attr(self, obj, names):
         for name in names:
@@ -2076,8 +2532,13 @@ class HwpBridge:
             "셀 병합을 해제하거나, 병합 셀이 포함되지 않은 범위만 선택한 뒤 다시 실행하세요."
         )
 
-    def cell_validate_range_no_merged_cells(self, left_col, top_row, right_col, bottom_row):
-        self._cell_focus_hwp()
+    def cell_validate_range_no_merged_cells(
+        self, left_col, top_row, right_col, bottom_row, focus_before=True
+    ):
+        if focus_before:
+            self._cell_focus_hwp()
+        else:
+            self._cell_get_hwp()
         self._cell_try_cmd("Cancel", 0)
 
         row_count = int(bottom_row) - int(top_row) + 1
@@ -2145,7 +2606,7 @@ class HwpBridge:
                         "병합 셀이 포함되지 않은 일반 셀 범위만 처리합니다."
                     )
 
-    def process_recorded_cell_range(self, start_col, start_row, end_col, end_row, transform_func):
+    def process_recorded_cell_range(self, start_col, start_row, end_col, end_row, transform_func=None, *, cell_operation=None):
         left_col = min(int(start_col), int(end_col))
         right_col = max(int(start_col), int(end_col))
         top_row = min(int(start_row), int(end_row))
@@ -2170,7 +2631,8 @@ class HwpBridge:
         changed = 0
         for r in range(row_count):
             for c in range(col_count):
-                if self.cell_transform_current_fast(transform_func):
+                updated = cell_operation() if cell_operation is not None else self.cell_transform_current_fast(transform_func)
+                if updated:
                     changed += 1
                 if c < col_count - 1:
                     self.cell_move_right()
@@ -2266,7 +2728,7 @@ class HwpBridge:
                         cell_size = self.cell_get_current_inner_size()
                     try:
                         size_option = 2 if size_mode == IMAGE_SIZE_STRETCH_TO_CELL else 3
-                        ctrl = self.hwp.InsertPicture(path, True, size_option, False, False, 0)
+                        ctrl = self._insert_picture_compatible(path, size_option)
                     except Exception as exc:
                         raise RuntimeError(
                             f"그림 삽입에 실패했습니다.\n\n파일: {os.path.basename(path)}\n오류: {exc}"
@@ -2307,6 +2769,26 @@ class HwpBridge:
             "inserted": inserted,
             "size_mode": size_mode,
         }
+
+    @staticmethod
+    def _is_bad_parameter_count_error(exc):
+        if isinstance(exc, TypeError):
+            return True
+        hresult = getattr(exc, "hresult", None)
+        if hresult is None and getattr(exc, "args", None):
+            hresult = exc.args[0]
+        return hresult == -2147352562  # DISP_E_BADPARAMCOUNT
+
+    def _insert_picture_compatible(self, path, size_option):
+        """한글 버전에 따라 다른 InsertPicture 인수 개수를 흡수한다."""
+        try:
+            return self.hwp.InsertPicture(
+                path, True, size_option, False, False, 0, 0, 0
+            )
+        except Exception as exc:
+            if not self._is_bad_parameter_count_error(exc):
+                raise
+            return self.hwp.InsertPicture(path, True, size_option, False, False, 0)
 
 
     def _hwp_set_item(self, parameter_set, name, value):

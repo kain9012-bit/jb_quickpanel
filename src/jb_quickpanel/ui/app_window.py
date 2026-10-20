@@ -930,7 +930,7 @@ class App(tk.Tk):
             if show_result:
                 messagebox.showinfo(
                     "시작 메뉴 등록",
-                    f"시작 메뉴에 등록했습니다.\nWindows 검색에서 '{APP_TITLE} ({APP_VERSION})'로 찾을 수 있습니다.",
+                    f"시작 메뉴에 등록했습니다.\nWindows 검색에서 '{APP_TITLE}'로 찾을 수 있습니다.",
                 )
         except Exception as exc:
             self._refresh_start_menu_status()
@@ -2442,9 +2442,9 @@ class App(tk.Tk):
         title = self._ask_user_item_title(kind)
         if not title:
             return
-        pending = self.user_content_store.pending_file_path(".hwp")
+        pending = self.user_content_store.pending_file_path(".hwpx")
         try:
-            ok, msg = self.hwp.save_selected_block(str(pending))
+            ok, msg = self.hwp.save_selected_block(str(pending), format_name="HWPX")
             if not ok:
                 messagebox.showerror("현재 블록 저장 실패", msg)
                 return

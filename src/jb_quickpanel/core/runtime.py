@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import os, json, io, sys, time, re
+import importlib, io, json, os, re, shutil, sys, time
 
 
 def _early_project_base_dir() -> str:
@@ -23,6 +23,12 @@ def _add_vendor_pywin32_paths():
     if not os.path.isdir(vendor_root):
         return
 
+    dll_dir = os.path.join(vendor_root, "pywin32_system32")
+    version = f"{sys.version_info.major}{sys.version_info.minor}"
+    if not all(os.path.isfile(os.path.join(dll_dir, f"{name}{version}.dll"))
+               for name in ("pythoncom", "pywintypes")):
+        return
+
     pywin32_paths = [
         vendor_root,
         os.path.join(vendor_root, "win32"),
@@ -33,7 +39,6 @@ def _add_vendor_pywin32_paths():
         if os.path.isdir(path) and path not in sys.path:
             sys.path.insert(0, path)
 
-    dll_dir = os.path.join(vendor_root, "pywin32_system32")
     if os.path.isdir(dll_dir):
         try:
             os.add_dll_directory(dll_dir)
@@ -232,7 +237,7 @@ def ui_remember_foreground_hwp():
             "parent": parent,
             "exe": exe,
         }
-        if ui_score_hwp_window(w) >= 12:
+        if visible and ui_score_hwp_window(w) >= 12:
             LAST_HWP_HWND = hwnd
             LAST_HWP_TITLE = title
     except Exception:
@@ -262,7 +267,7 @@ def ui_get_last_hwp_window():
             "parent": parent,
             "exe": exe,
         }
-        if ui_score_hwp_window(w) >= 12:
+        if visible and ui_score_hwp_window(w) >= 12:
             return w
     except Exception:
         return None
@@ -296,6 +301,141 @@ def bring_last_hwp_to_front_if_any():
     return True, f"대상 한글창: {target.get('title', '')}"
 
 
+def inspect_hwp_windows(hwp):
+    """Return live window handles exposed by one HWP COM object."""
+    state = {
+        "inspected": False,
+        "visible": False,
+        "handles": (),
+        "visible_handles": (),
+        "pids": (),
+    }
+    try:
+        windows = hwp.XHwpWindows
+        count = int(windows.Count)
+    except Exception:
+        return state
+
+    state["inspected"] = count == 0
+    handles = []
+    visible_handles = []
+    pids = []
+    for index in range(max(0, count)):
+        try:
+            window = windows.Item(index)
+        except Exception:
+            continue
+
+        hwnd = 0
+        try:
+            hwnd = int(window.WindowHandle or 0)
+            state["inspected"] = True
+        except Exception:
+            pass
+
+        com_visible = False
+        try:
+            com_visible = bool(window.Visible)
+            state["inspected"] = True
+        except Exception:
+            pass
+
+        live_handle = hwnd
+        os_visible = None
+        if hwnd and win32gui is not None:
+            try:
+                if not win32gui.IsWindow(hwnd):
+                    live_handle = 0
+                else:
+                    os_visible = bool(win32gui.IsWindowVisible(hwnd))
+            except Exception:
+                pass
+
+        if live_handle:
+            handles.append(live_handle)
+            if win32process is not None:
+                try:
+                    _, pid = win32process.GetWindowThreadProcessId(live_handle)
+                    if pid:
+                        pids.append(int(pid))
+                except Exception:
+                    pass
+
+        is_visible = com_visible if os_visible is None else os_visible
+        if is_visible:
+            state["visible"] = True
+            if live_handle:
+                visible_handles.append(live_handle)
+
+    state["handles"] = tuple(dict.fromkeys(handles))
+    state["visible_handles"] = tuple(dict.fromkeys(visible_handles))
+    state["pids"] = tuple(dict.fromkeys(pids))
+    return state
+
+
+def _select_running_hwp_candidate(candidates, preferred_hwnd=0, preferred_pid=0):
+    """Choose the visible HWP object that owns the user's last active window."""
+    if not candidates:
+        return None
+
+    visible = [item for item in candidates if item["window_state"].get("visible")]
+    if visible:
+        pool = visible
+    else:
+        uninspected = [
+            item for item in candidates if not item["window_state"].get("inspected")
+        ]
+        if not uninspected:
+            return None
+        pool = uninspected
+
+    preferred_hwnd = int(preferred_hwnd or 0)
+    preferred_pid = int(preferred_pid or 0)
+
+    def score(item):
+        state = item["window_state"]
+        handles = state.get("handles") or ()
+        pids = state.get("pids") or ()
+        return (
+            int(bool(preferred_hwnd and preferred_hwnd in handles)),
+            int(bool(preferred_pid and preferred_pid in pids)),
+            int(bool(state.get("visible"))),
+            int(item["version"]),
+            int(item["index"]),
+        )
+
+    return max(pool, key=score)
+
+
+def hwp_connection_matches_visible_target(hwp):
+    """Check that a cached COM object still owns the HWP window the user is editing."""
+    if hwp is None:
+        return False
+    key_indicator = getattr(hwp, "KeyIndicator", None)
+    if callable(key_indicator):
+        try:
+            key_indicator()
+        except Exception:
+            return False
+
+    ui_remember_foreground_hwp()
+    target = ui_get_last_hwp_window()
+    state = inspect_hwp_windows(hwp)
+    if not state.get("inspected"):
+        return True
+    if not state.get("visible"):
+        return False
+    if not target:
+        return True
+
+    target_hwnd = int(target.get("hwnd") or 0)
+    target_pid = int(target.get("pid") or 0)
+    return bool(
+        (target_hwnd and target_hwnd in (state.get("handles") or ()))
+        or (target_pid and target_pid in (state.get("pids") or ()))
+    )
+
+
 _WIN32COM_GEN_CACHE_ERROR_MARKERS = (
     "win32com.gen_py",
     "CLSIDToPackageMap",
@@ -311,6 +451,56 @@ def is_win32com_gen_cache_error(error: Exception) -> bool:
     return any(marker in message for marker in _WIN32COM_GEN_CACHE_ERROR_MARKERS)
 
 
+_HWP_TYPELIB_CACHE_PREFIX = "7D2B6F3C-1D95-4E0C-BF5A-5EE564186FBC"
+
+
+def repair_hwp_win32com_gen_cache(error: Exception) -> bool:
+    """손상된 HWP makepy 모듈과 색인만 제거하고 pywin32 캐시를 재구성한다."""
+    if win32com is None or not is_win32com_gen_cache_error(error):
+        return False
+
+    try:
+        from win32com.client import gencache
+
+        gen_root = os.path.realpath(str(win32com.__gen_path__))
+        if not os.path.isdir(gen_root):
+            return False
+
+        removed = False
+        for name in os.listdir(gen_root):
+            if not name.upper().startswith(_HWP_TYPELIB_CACHE_PREFIX):
+                continue
+            target = os.path.realpath(os.path.join(gen_root, name))
+            if os.path.commonpath((gen_root, target)) != gen_root:
+                continue
+            if os.path.isdir(target):
+                shutil.rmtree(target)
+            elif os.path.isfile(target):
+                os.remove(target)
+            removed = True
+
+        dict_path = os.path.join(gen_root, "dicts.dat")
+        if os.path.isfile(dict_path):
+            os.remove(dict_path)
+
+        module_prefix = f"win32com.gen_py.{_HWP_TYPELIB_CACHE_PREFIX}"
+        for module_name in tuple(sys.modules):
+            if module_name.upper().startswith(module_prefix.upper()):
+                sys.modules.pop(module_name, None)
+
+        importlib.invalidate_caches()
+        gencache.Rebuild(verbose=0)
+        return removed
+    except Exception:
+        return False
+
+
+def redispatch_com_object_dynamically(dispatch):
+    """이미 연결된 COM 객체를 손상된 makepy 캐시를 쓰지 않는 래퍼로 바꾼다."""
+    raw_dispatch = getattr(dispatch, "__dict__", {}).get("_oleobj_", dispatch)
+    return win32com.client.dynamic.Dispatch(raw_dispatch)
+
+
 def dispatch_com_object_safely(dispatch):
     """생성 캐시가 손상된 경우 makepy를 쓰지 않는 동적 COM으로 자동 우회한다."""
     try:
@@ -318,8 +508,9 @@ def dispatch_com_object_safely(dispatch):
     except Exception as error:
         if not is_win32com_gen_cache_error(error):
             raise
+        repair_hwp_win32com_gen_cache(error)
         try:
-            return win32com.client.dynamic.Dispatch(dispatch), True
+            return redispatch_com_object_dynamically(dispatch), True
         except Exception as fallback_error:
             raise RuntimeError(
                 f"pywin32 COM 캐시 손상 자동 우회 실패: {fallback_error}"
@@ -370,7 +561,16 @@ def get_running_hwp_from_rot():
                 hwp, used_dynamic_dispatch = dispatch_com_object_safely(disp)
                 version = int(m.group(1))
                 index = int(m.group(2))
-                found.append((version, index, name, hwp, used_dynamic_dispatch))
+                found.append(
+                    {
+                        "version": version,
+                        "index": index,
+                        "name": name,
+                        "hwp": hwp,
+                        "used_dynamic_dispatch": used_dynamic_dispatch,
+                        "window_state": inspect_hwp_windows(hwp),
+                    }
+                )
             except Exception as e:
                 errors.append(f"{name}: {e}")
     except Exception as e:
@@ -380,12 +580,27 @@ def get_running_hwp_from_rot():
         detail = "\n".join(errors) if errors else "ROT에서 !HwpObject.* 형식의 실행 중 한글 객체를 찾지 못했습니다."
         return False, None, detail
 
-    # 같은 PC에 여러 한글 버전/인스턴스가 있을 수 있어 최신 버전, 높은 인스턴스 번호를 우선한다.
-    # 일반 삽입은 창을 전면 전환하지 않고 이 객체에 직접 명령을 실행한다.
-    found.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    version, index, name, hwp, used_dynamic_dispatch = found[0]
-    cache_note = " (COM 캐시 자동 우회)" if used_dynamic_dispatch else ""
-    return True, hwp, f"실행 중 한글 연결 완료: {name}{cache_note}"
+    ui_remember_foreground_hwp()
+    target = ui_get_last_hwp_window() or {}
+    selected = _select_running_hwp_candidate(
+        found,
+        preferred_hwnd=target.get("hwnd"),
+        preferred_pid=target.get("pid"),
+    )
+    if selected is None:
+        return (
+            False,
+            None,
+            "화면에 표시된 한글 문서를 찾지 못했습니다. 숨겨진 한글 프로세스에는 작업하지 않습니다.",
+        )
+
+    cache_note = " (COM 캐시 자동 우회)" if selected["used_dynamic_dispatch"] else ""
+    target_note = f" / 대상: {target.get('title', '')}" if target.get("title") else ""
+    return (
+        True,
+        selected["hwp"],
+        f"실행 중 한글 연결 완료: {selected['name']}{target_note}{cache_note}",
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -23,8 +23,8 @@ class DocumentPreviewTests(unittest.TestCase):
         self.assertLess(cropped.width, image.width)
         self.assertLess(cropped.height, image.height)
 
-    def test_real_hwp_embedded_preview_is_written_without_opening_hwp(self):
-        source = ROOT / "blocks_hwp" / "참고박스.hwp"
+    def test_real_hwpx_embedded_preview_is_written_without_opening_hwp(self):
+        source = ROOT / "blocks_hwp" / "참고박스.hwpx"
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / "preview.png"
 

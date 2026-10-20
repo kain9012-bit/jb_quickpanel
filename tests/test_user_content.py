@@ -3,17 +3,19 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from zipfile import ZipFile
 
 from src.jb_quickpanel.bridges.hwp_bridge import HwpBridge
 from src.jb_quickpanel.services.user_content import UserContentError, UserContentStore
 
 
 class UserContentStoreTests(unittest.TestCase):
-    def test_added_hwp_file_is_copied_and_survives_original_removal(self):
+    def test_added_hwp_file_keeps_format_and_survives_original_removal(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "data"
             source = Path(folder) / "원본.hwp"
-            source.write_bytes(b"hwp-test")
+            source.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1hwp-test")
             store = UserContentStore(root)
 
             item = store.add_file("style", "내 서식", source)
@@ -23,12 +25,26 @@ class UserContentStoreTests(unittest.TestCase):
             self.assertEqual(item["title"], "내 서식")
             self.assertEqual(len(listed), 1)
             self.assertTrue(Path(listed[0]["file"]).is_file())
-            self.assertEqual(Path(listed[0]["file"]).read_bytes(), b"hwp-test")
+            self.assertEqual(Path(listed[0]["file"]).suffix, ".hwp")
+            self.assertEqual(list((root / "styles").glob("*.hwpx")), [])
+            self.assertEqual(Path(listed[0]["file"]).read_bytes(), b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1hwp-test")
+
+    def test_invalid_file_does_not_register_item(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "원본.hwp"
+            source.write_bytes(b"not-an-hwp")
+            store = UserContentStore(Path(folder) / "data")
+            with self.assertRaisesRegex(UserContentError, "올바른 HWP"):
+                store.add_file("form", "내 양식", source)
+            self.assertEqual(store.list_items("form"), [])
+            self.assertEqual(list((store.root / "forms").glob("*.hwpx")), [])
+            self.assertTrue(source.exists())
 
     def test_duplicate_title_is_rejected_and_delete_removes_copy(self):
         with tempfile.TemporaryDirectory() as folder:
             source = Path(folder) / "양식.hwpx"
-            source.write_bytes(b"hwpx-test")
+            with ZipFile(source, "w") as archive:
+                archive.writestr("Contents/section0.xml", "<section/>")
             store = UserContentStore(Path(folder) / "data")
             item = store.add_file("form", "회의 양식", source)
             copied = Path(store.list_items("form")[0]["file"])

@@ -183,6 +183,8 @@ TABLE_V31_TOOLS = (
 )
 
 
+
+
 def with_table_fill_none_tool(items):
     """v2.9 표 작업을 추가하되 공유 config의 원본 목록은 변경하지 않는다."""
     tools = [dict(item) for item in (items or [])]

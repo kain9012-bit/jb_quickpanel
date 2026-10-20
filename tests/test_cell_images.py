@@ -18,12 +18,39 @@ class _FakeHwp:
         self.insert_calls = []
         self.deleted = []
 
-    def InsertPicture(self, *args):
+    def InsertPicture(
+        self,
+        path,
+        embedded,
+        sizeoption,
+        reverse,
+        watermark,
+        effect,
+        width,
+        height,
+    ):
+        args = (
+            path,
+            embedded,
+            sizeoption,
+            reverse,
+            watermark,
+            effect,
+            width,
+            height,
+        )
         self.insert_calls.append(args)
         return object()
 
     def DeleteCtrl(self, ctrl):
         self.deleted.append(ctrl)
+
+
+class _LegacySixArgumentHwp(_FakeHwp):
+    def InsertPicture(self, path, embedded, sizeoption, reverse, watermark, effect):
+        args = (path, embedded, sizeoption, reverse, watermark, effect)
+        self.insert_calls.append(args)
+        return object()
 
 
 class _FakePictureBridge(HwpBridge):
@@ -195,7 +222,26 @@ class CellImageTests(unittest.TestCase):
 
         self.assertEqual(result["inserted"], 3)
         self.assertEqual([call[0] for call in bridge.hwp.insert_calls], paths)
-        self.assertTrue(all(call[1:] == (True, 3, False, False, 0) for call in bridge.hwp.insert_calls))
+        self.assertTrue(
+            all(
+                call[1:] == (True, 3, False, False, 0, 0, 0)
+                for call in bridge.hwp.insert_calls
+            )
+        )
+
+    def test_insert_falls_back_to_legacy_six_argument_signature(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "1.png")
+            open(path, "wb").close()
+            bridge = _FakePictureBridge()
+            bridge.hwp = _LegacySixArgumentHwp()
+            result = bridge.insert_pictures_into_cell_range([path], 1, 1, 1, 1)
+
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(
+            bridge.hwp.insert_calls[0],
+            (path, True, 3, False, False, 0),
+        )
 
     def test_nonempty_cell_stops_before_insertion(self):
         with tempfile.TemporaryDirectory() as folder:

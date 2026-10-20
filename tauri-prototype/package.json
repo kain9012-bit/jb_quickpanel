@@ -1,12 +1,14 @@
 {
     "name":  "jb-hwp-helper",
-    "version":  "4.0.0",
+    "version": "0.0.7",
     "private":  true,
     "type":  "module",
     "packageManager":  "pnpm@11.16.0",
     "scripts":  {
                     "dev":  "vite",
                     "build":  "tsc \u0026\u0026 vite build",
+                    "manual:check": "node ../매뉴얼/도구/build-manual.cjs --check",
+                    "manual:build": "node ../매뉴얼/도구/build-manual.cjs",
                     "tauri":  "tauri",
                     "tauri:dev":  "tauri dev",
                     "tauri:build":  "tauri build"

@@ -2,18 +2,41 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from zipfile import ZipFile
 
 from src.jb_quickpanel.services.user_content import UserContentError, UserContentStore
 
 
 class UserContentPreviewTests(unittest.TestCase):
+    def test_failed_preview_save_keeps_previous_image(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "data"
+            source = Path(folder) / "source.hwpx"
+            previous = Path(folder) / "previous.png"
+            replacement = Path(folder) / "replacement.png"
+            with ZipFile(source, "w") as archive:
+                archive.writestr("Contents/section0.xml", "<section/>")
+            previous.write_bytes(b"previous-image")
+            replacement.write_bytes(b"replacement-image")
+            store = UserContentStore(root)
+            item = store.add_file("style", "Example", source, preview_path=previous)
+            preview_path = Path(store.list_items("style")[0]["thumb"])
+            with patch.object(store, "_save", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    store.update_preview("style", item["id"], replacement)
+            self.assertEqual(preview_path.read_bytes(), b"previous-image")
+            self.assertEqual(Path(store.list_items("style")[0]["thumb"]), preview_path)
+            self.assertEqual(list((root / "previews").glob("*.png")), [preview_path])
+
     def test_preview_is_copied_replaced_cleared_and_deleted_with_item(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "data"
-            source = Path(folder) / "source.hwp"
+            source = Path(folder) / "source.hwpx"
             preview_png = Path(folder) / "preview.png"
             preview_jpg = Path(folder) / "replacement.jpg"
-            source.write_bytes(b"hwp")
+            with ZipFile(source, "w") as archive:
+                archive.writestr("Contents/section0.xml", "<section/>")
             preview_png.write_bytes(b"png-preview")
             preview_jpg.write_bytes(b"jpg-preview")
             store = UserContentStore(root)

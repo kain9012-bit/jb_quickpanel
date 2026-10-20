@@ -30,6 +30,8 @@ _STRUCTURAL_ORDER = {
     "md_heading_4": 13,
     "md_heading_5": 14,
     "md_heading_6": 15,
+    "chapter": 16,
+    "section": 18,
     "roman_dot": 20,
     "number_dot": 30,
     "hangul_dot": 40,
@@ -74,7 +76,83 @@ _PLAIN_HEADING_WORDS = (
     "협조사항",
     "기대효과",
     "향후계획",
+    "추진배경",
+    "추진목적",
+    "추진방향",
+    "추진방침",
+    "세부추진계획",
+    "추진일정",
+    "소요예산",
+    "예산계획",
+    "기대효과",
+    "성과지표",
+    "평가계획",
+    "안전관리",
+    "홍보계획",
+    "업무분장",
+    "사업개요",
+    "운영개요",
+    "안내문안",
 )
+
+_AI_PREAMBLE_PATTERNS = (
+    r"^(?:다음은|아래는)\s+.*(?:계획서|보고서|초안).*(?:입니다|작성했습니다|정리했습니다)[.!]?$",
+    r"^(?:요청하신|말씀하신)\s+.*(?:계획서|보고서|초안).*$",
+)
+
+_AI_CLOSING_PATTERNS = (
+    r"^(?:필요하시면|원하시면|추가로)\s+.*(?:수정|보완|작성|정리).*(?:드리겠습니다|할 수 있습니다)[.!]?$",
+)
+
+
+def strip_markdown_emphasis(text: str) -> str:
+    parts = re.split(r"(`+[^`\n]*`+)", text or "")
+    for index in range(0, len(parts), 2):
+        value = re.sub(r"(?<![\\*])\*\*(?!\*)(?=\S)(.+?)(?<=\S)(?<!\\)\*\*(?!\*)", r"\1", parts[index])
+        parts[index] = re.sub(r"(?<![\w\\_])__(?!_)(?=\S)(.+?)(?<=\S)(?<!\\)__(?![\w_])", r"\1", value)
+    return "".join(parts)
+
+
+def split_pipe_cells(line: str) -> list[str]:
+    raw = (line or "").strip()
+    if raw.startswith("|"):
+        raw = raw[1:]
+    if raw.endswith("|"):
+        backslashes = len(raw[:-1]) - len(raw[:-1].rstrip("\\"))
+        if backslashes % 2 == 0:
+            raw = raw[:-1]
+    cells, cell = [], []
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if char == "\\":
+            end = index
+            while end < len(raw) and raw[end] == "\\":
+                end += 1
+            count = end - index
+            if end < len(raw) and raw[end] == "|":
+                cell.append("\\" * (count // 2))
+                if count % 2:
+                    cell.append("|")
+                    index = end + 1
+                    continue
+                index = end
+                continue
+            cell.append(raw[index:end])
+            index = end
+            continue
+        if char == "|":
+            cells.append("".join(cell).strip())
+            cell = []
+        else:
+            cell.append(char)
+        index += 1
+    cells.append("".join(cell).strip())
+    return cells
+
+
+def escape_pipe_cell(text: str) -> str:
+    return re.sub(r"(\\*)\|", lambda match: "\\" * (2 * len(match.group(1)) + 1) + "|", str(text))
 
 
 def _unwrap_markdown_cell(text: str) -> str:
@@ -84,21 +162,20 @@ def _unwrap_markdown_cell(text: str) -> str:
         changed = False
         for wrapper in ("**", "__", "`"):
             if value.startswith(wrapper) and value.endswith(wrapper) and len(value) > len(wrapper) * 2:
-                value = value[len(wrapper):-len(wrapper)].strip()
+                inner = value[len(wrapper):-len(wrapper)].strip()
+                if wrapper != "`" and wrapper in inner:
+                    continue
+                value = inner
                 changed = True
                 break
-    return value
+    return strip_markdown_emphasis(value)
 
 
 def _pipe_cells(line: str) -> list[str] | None:
     raw = (line or "").strip()
-    if raw.count("|") < 2:
+    if "|" not in raw:
         return None
-    if raw.startswith("|"):
-        raw = raw[1:]
-    if raw.endswith("|"):
-        raw = raw[:-1]
-    cells = [cell.strip() for cell in raw.split("|")]
+    cells = split_pipe_cells(raw)
     return cells if len(cells) >= 2 else None
 
 
@@ -172,41 +249,78 @@ def _parse_marker(text: str) -> Marker | None:
     match = re.match(r"^(#{1,6})\s+(.+)$", value)
     if match:
         level = len(match.group(1))
-        return Marker(f"md_heading_{level}", match.group(1), match.group(2).strip())
+        return Marker(f"md_heading_{level}", match.group(1), strip_markdown_emphasis(match.group(2).strip()))
 
-    if ((value.startswith("**") and value.endswith("**")) or
-            (value.startswith("__") and value.endswith("__"))):
+    if re.fullmatch(r"(?:\*\*[^*]+\*\*|__[^_]+__)", value):
         body = _unwrap_markdown_cell(value)
-        if body:
+        if body and not re.search(r"(합니다|됩니다|있습니다|없습니다|한다|된다|있다|없다|함|임)\.?$", body):
             return Marker("bold_heading", "", body)
 
+    value = strip_markdown_emphasis(value)
+
     patterns = (
+        ("chapter", r"^(제\s*\d+\s*장)\s*[:：.]?\s*(.+)$"),
+        ("section", r"^(제\s*\d+\s*절)\s*[:：.]?\s*(.+)$"),
         ("reference", r"^(※|주\)|\*\))\s*(.*)$"),
-        ("roman_dot", r"^([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫIVX]+)\.\s+(.+)$"),
-        ("number_dot", r"^(\d{1,3})\.\s+(.+)$"),
+        ("roman_dot", r"^([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫⅰⅱⅲⅳⅴⅵⅶⅷⅸⅹ]+)\.\s+(.+)$"),
+        ("roman_dot", r"^([IVXLCDMivxlcdm]+)\.\s+([가-힣].*)$"),
+        ("number_dot", r"^(\d{1,3})\.\s+(?=\S)(?!\d{1,2}\.(?:\s|\(|$))(.+)$"),
+        ("number_dot", r"^(\d{1,3})\s+(?!(?:명|개|건|회|쪽|페이지|일|개월|년|시간|분|초|원)(?:\s|$))(\S.*)$"),
         ("hangul_dot", r"^([가-하])\.\s+(.+)$"),
         ("number_paren", r"^(\(?\d{1,3}\))\s+(.+)$"),
         ("hangul_paren", r"^(\(?[가-하]\))\s+(.+)$"),
         ("circled_number", r"^([①-⑳])\s+(.+)$"),
-        ("square", r"^([□■▣◇◆ㅁ])\s*(.+)$"),
-        ("circle", r"^([○●◦ㅇ])\s*(.+)$"),
+        ("square", r"^([□■▣◇◆ㅁ])(?!\1)\s*(.+)$"),
+        ("circle", r"^([○●◦ㅇ])(?!\1)\s*(.+)$"),
         ("dash", r"^([-–—·ㆍ•])\s+(.+)$"),
+        ("check", r"^(\[(?: |x|X|v|V|✓)?\]|☐|☑|✓|✔)\s*(.+)$"),
+        ("bullet", r"^([*+])\s+(.+)$"),
     )
     for kind, pattern in patterns:
         match = re.match(pattern, value)
         if match:
-            return Marker(kind, match.group(1), match.group(2).strip())
+            return Marker(kind, match.group(1), strip_markdown_emphasis(match.group(2).strip()))
     return None
 
 
 def _looks_like_plain_heading(text: str) -> bool:
-    value = (text or "").strip()
-    if not value or len(value) > 32:
+    value = strip_markdown_emphasis(text).strip()
+    value = re.sub(r"\s*[:：]\s*$", "", value)
+    if not value or len(value) > 40:
         return False
     if re.search(r"(합니다|됩니다|있습니다|없습니다|한다|된다|있다|없다|함|임)\.?$", value):
         return False
     compact = re.sub(r"\s+", "", value)
     return any(compact.endswith(word) for word in _PLAIN_HEADING_WORDS)
+
+
+def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
+    value = (text or "").strip()
+    return any(re.match(pattern, value, re.IGNORECASE) is not None for pattern in patterns)
+
+
+def _normalize_ai_draft_lines(raw_text: str) -> tuple[list[str], set[int]]:
+    normalized = (raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+    removed: set[int] = set()
+    meaningful = [index for index, line in enumerate(lines) if line.strip()]
+
+    for index in meaningful[:2]:
+        if _matches_any(lines[index], _AI_PREAMBLE_PATTERNS):
+            removed.add(index)
+    for index in meaningful[-2:]:
+        if _matches_any(lines[index], _AI_CLOSING_PATTERNS):
+            removed.add(index)
+
+    for index, line in enumerate(lines):
+        value = line.strip()
+        if re.fullmatch(r"\x60\x60\x60(?:markdown|md|text|plaintext)?", value, re.IGNORECASE):
+            removed.add(index)
+        elif re.fullmatch(r"(?:-{3,}|\*{3,}|_{3,})", value):
+            removed.add(index)
+        elif value.startswith("> "):
+            lines[index] = value[2:].strip()
+    return lines, removed
 
 
 _HANGUL_SEQUENCE = ("가", "나", "다", "라", "마", "바", "사", "아", "자", "차", "카", "타", "파", "하")
@@ -243,7 +357,11 @@ def _title_candidate(text: str, marker: Marker | None, has_following_structure: 
     if not has_following_structure:
         return False
     if marker is not None:
-        return marker.kind in ("md_heading_1", "bold_heading")
+        if marker.kind == "md_heading_1":
+            return _parse_marker(marker.body) is None
+        if marker.kind == "bold_heading":
+            return _parse_marker(marker.body) is None
+        return False
     value = (text or "").strip()
     if not (2 <= len(value) <= 80):
         return False
@@ -258,10 +376,10 @@ def _title_candidate(text: str, marker: Marker | None, has_following_structure: 
 
 def _display_text(original: str, marker: Marker | None) -> str:
     if marker is not None and marker.kind.startswith("md_heading_"):
-        return marker.body
+        return strip_markdown_emphasis(marker.body)
     if marker is not None and marker.kind == "bold_heading":
         return marker.body
-    return (original or "").strip()
+    return strip_markdown_emphasis(original).strip()
 
 
 def _heading_key(text: str, marker: Marker | None) -> str | None:
@@ -323,8 +441,7 @@ def _styled_item(
 def transform_untagged_report_text(
     raw_text: str, *, has_external_table: bool = False
 ) -> tuple[list[dict], int]:
-    normalized = (raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
-    lines = normalized.split("\n")
+    lines, removed_indexes = _normalize_ai_draft_lines(raw_text)
     table_blocks = detect_untagged_table_blocks(lines)
     table_by_start = {block.start: block for block in table_blocks}
     table_line_indexes = {
@@ -337,7 +454,7 @@ def transform_untagged_report_text(
     heading_keys: dict[int, str] = {}
     meaningful_indexes: list[int] = []
     for index, line in enumerate(lines):
-        if index in table_line_indexes or not line.strip():
+        if index in removed_indexes or index in table_line_indexes or not line.strip():
             continue
         meaningful_indexes.append(index)
         marker = _parse_marker(line)
@@ -360,9 +477,12 @@ def transform_untagged_report_text(
         document_title_index = first_index
         heading_keys.pop(first_index, None)
 
-    observed_keys = sorted(
-        set(heading_keys.values()),
-        key=lambda key: _STRUCTURAL_ORDER.get(key, 999),
+    observed_keys = list(
+        dict.fromkeys(
+            heading_keys[index]
+            for index in meaningful_indexes
+            if index in heading_keys
+        )
     )
     heading_tags = {
         key: ("제목" if level == 0 else "소제목" if level == 1 else "소소제목")
@@ -374,6 +494,11 @@ def transform_untagged_report_text(
     heading_counts = {"제목": 0, "소제목": 0, "소소제목": 0}
     index = 0
     while index < len(lines):
+        if index in removed_indexes:
+            changed_count += 1
+            index += 1
+            continue
+
         block = table_by_start.get(index)
         if block is not None:
             results.append({
@@ -424,3 +549,77 @@ def transform_untagged_report_text(
         index += 1
 
     return results, changed_count
+
+
+def _virtual_tag_body(item: dict) -> str:
+    value = str(item.get("text") or "").strip()
+    marker = _parse_marker(value)
+    if marker is not None:
+        return marker.body.strip()
+    return value
+
+
+def convert_untagged_report_to_tagged_text(
+    raw_text: str, *, has_external_table: bool = False
+) -> tuple[str, int]:
+    """Convert a plain AI draft to the canonical tag format used by the formatter."""
+    items, inferred_count = transform_untagged_report_text(
+        raw_text,
+        has_external_table=has_external_table,
+    )
+    lines: list[str] = []
+    previous_tag: str | None = None
+    heading_counts = {"제목": 0, "소제목": 0, "소소제목": 0}
+
+    def append_blank() -> None:
+        if lines and lines[-1] != "":
+            lines.append("")
+
+    for item in items:
+        tag = item.get("tag")
+        if tag is None:
+            continue
+
+        if tag == "표":
+            lines.append("(표시작)")
+            for row in item.get("rows") or []:
+                lines.append(" | ".join(escape_pipe_cell(str(cell).strip()) for cell in row))
+            lines.append("(표끝)")
+            append_blank()
+            previous_tag = "표끝"
+            continue
+
+        if tag == "제목":
+            append_blank()
+        elif tag in ("소제목", "소소제목") and previous_tag in (
+            "본문",
+            "참고",
+            "표끝",
+        ):
+            append_blank()
+
+        if tag == "문서제목":
+            body = _virtual_tag_body(item)
+            content = f"- {body}"
+        elif tag in ("제목", "소제목", "소소제목"):
+            heading_counts[tag] += 1
+            if tag == "제목":
+                heading_counts["소제목"] = 0
+                heading_counts["소소제목"] = 0
+            elif tag == "소제목":
+                heading_counts["소소제목"] = 0
+            body = _virtual_tag_body(item)
+            content = _next_heading_prefix(tag, heading_counts[tag]) + body
+        elif tag == "본문":
+            content = f"- {_virtual_tag_body(item)}"
+        elif tag == "참고":
+            content = f"※ {_virtual_tag_body(item)}"
+        else:
+            continue
+
+        lines.append(f"({tag}) {content}".rstrip())
+        previous_tag = str(tag)
+
+    while lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines), inferred_count

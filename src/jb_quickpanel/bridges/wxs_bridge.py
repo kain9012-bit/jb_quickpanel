@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 from src.jb_quickpanel.core.runtime import *
+from src.jb_quickpanel.features.object_properties import set_current_object_treat_as_char
+from src.jb_quickpanel.features.character_effects import compose_parameters, script_parameters
 
 class WxsHwpBridge:
     TARGET_EXE = "wxsclient.exe"
@@ -433,13 +435,15 @@ class WxsHwpBridge:
         if not ok:
             return False, msg
         try:
-            self._invoke_method(
+            result = self._invoke_method(
                 self.editor,
                 "Run",
                 (cmd,),
                 ret_type=(pythoncom.VT_VARIANT, 0),
                 arg_types=((pythoncom.VT_BSTR, 1),),
             )
+            if isinstance(result, (bool, int)) and not result:
+                return False, f"기안창에서 {cmd} 명령을 실행하지 못했습니다."
             self.restore_focus()
             return True, "OK"
         except Exception as e:
@@ -649,6 +653,30 @@ class WxsHwpBridge:
         except Exception as e:
             return False, f"K-에듀파인 기안창 셀 배경색 제거 실패: {e}"
 
+    def set_object_treat_as_char(self, enabled: bool):
+        ok, message = self.ensure()
+        if not ok:
+            return False, message
+        try:
+            return set_current_object_treat_as_char(
+                self._dispatch_obj(self.editor), enabled, self._item, self._set_item,
+            )
+        except Exception as error:
+            if is_rpc_error(error):
+                self.reset()
+            return False, f"개체 설정 실패: {error}"
+
+    def start_table_drawing(self):
+        ok, message = self.ensure()
+        if not ok:
+            return False, message
+        if not self.restore_focus():
+            return False, "기안창 본문을 활성화하지 못했습니다. 본문을 클릭한 뒤 다시 시도하세요."
+        ok, message = self.run_cmd("TableDrawPen")
+        if not ok:
+            return False, message
+        return True, "표 그리기 모드를 시작했습니다."
+
     def apply_table_tool(self, action_id: str):
         ok, msg = self.ensure()
         if not ok:
@@ -811,11 +839,13 @@ class WxsHwpBridge:
 
     def insert_file(self, filepath_abs: str):
         """K-에듀파인 기안창 현재 커서 위치에 HWP 조각 파일 삽입."""
+        path = os.path.abspath(filepath_abs)
+        if os.path.splitext(path)[1].lower() != ".hwp":
+            return False, "기안창에는 HWP 형식으로 준비된 서식만 삽입할 수 있습니다."
         ok, msg = self.ensure()
         if not ok:
             return False, msg
 
-        path = os.path.abspath(filepath_abs)
         if not os.path.exists(path):
             return False, f"파일이 없습니다: {path}"
 
@@ -854,7 +884,7 @@ class WxsHwpBridge:
             self.reset()
             return False, f"K-에듀파인 기안창 서식 삽입 실패: {e}"
 
-    def apply_charshape(self, font_name: str | None = None, font_size_pt: int | None = None, font_color_rgb: tuple[int,int,int] | None = None, bold: bool | None = None):
+    def apply_charshape(self, font_name: str | None = None, font_size_pt: int | None = None, font_color_rgb: tuple[int,int,int] | None = None, bold: bool | None = None, script_mode: str | None = None):
         """K-에듀파인 기안창 선택 영역 또는 이후 입력 글자에 글자모양 적용."""
         ok, msg = self.ensure()
         if not ok:
@@ -897,6 +927,10 @@ class WxsHwpBridge:
                     except Exception:
                         pass
 
+            if script_mode is not None:
+                for key, value in script_parameters(script_mode).items():
+                    self._set_item(pset, key, value)
+
             result = self._action_execute(action, pset)
             try:
                 if int(result) == 0:
@@ -908,5 +942,28 @@ class WxsHwpBridge:
         except Exception as e:
             self.reset()
             return False, f"K-에듀파인 기안창 글자 적용 실패: {e}"
+
+    def compose_characters(self, value, shape):
+        try:
+            values = compose_parameters(value, shape)
+        except ValueError as error:
+            return False, str(error)
+        ok, message = self.ensure()
+        if not ok:
+            return False, message
+        try:
+            action = self._create_action("ComposeChars")
+            pset = self._action_create_set(action)
+            self._action_get_default(action, pset)
+            for key, item in values.items():
+                self._set_item(pset, key, item)
+            if not self._action_execute(action, pset):
+                return False, "글자 겹치기를 실행하지 못했습니다."
+            self.restore_focus()
+            return True, "글자 겹치기 삽입 완료"
+        except Exception as error:
+            if is_rpc_error(error):
+                self.reset()
+            return False, f"글자 겹치기 실패: {error}"
 
 # 보고서 태그 규칙은 core/runtime.py 로 이동했다. (import * 로 그대로 사용 가능)

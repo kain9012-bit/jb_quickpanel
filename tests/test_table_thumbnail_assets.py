@@ -4,7 +4,7 @@ import json
 import unittest
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from src.jb_quickpanel.features import registry
 
@@ -32,6 +32,21 @@ class TableThumbnailAssetTests(unittest.TestCase):
                     self.assertIsNotNone(image.getchannel("A").getbbox())
 
         self.assertEqual(len(hashes), 20)
+
+    def test_trimmed_preview_keeps_all_icon_artwork(self):
+        config = json.loads((ROOT / "config/config.json").read_text(encoding="utf-8"))
+        for tool in registry.with_current_table_tools(config["table_tools"]):
+            with self.subTest(action_id=tool["action_id"]):
+                with Image.open(ROOT / tool["thumb"]) as image:
+                    white = Image.new("RGBA", image.size, "white")
+                    visible = Image.alpha_composite(white, image.convert("RGBA")).convert("RGB")
+                    bounds = ImageChops.difference(visible, white.convert("RGB")).getbbox()
+                self.assertIsNotNone(bounds)
+                left, top, right, bottom = bounds
+                self.assertGreaterEqual(left, 72)
+                self.assertGreaterEqual(top, 52)
+                self.assertLessEqual(right, 440)
+                self.assertLessEqual(bottom, 356)
 
 
 if __name__ == "__main__":

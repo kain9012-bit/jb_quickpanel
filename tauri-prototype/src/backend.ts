@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { CardFavorites } from "./favorites";
 
 export type BackendResponse<T = Record<string, unknown>> = {
   id: number;
@@ -24,7 +25,23 @@ export type ContentItem = {
   source: "builtin" | "user";
   user_item: boolean;
   preview: string;
+  available?: boolean;
   margins?: PageMargins;
+  orientation?: "portrait" | "landscape";
+};
+
+export type AutoTitleTemplate = ContentItem & {
+  role: "document_title" | "title";
+};
+
+export type AutoTitleAnalysis = {
+  role: "document_title" | "title";
+  pending_id: string;
+  preview: string;
+  title_sample: string;
+  number_sample: string;
+  segments: string[];
+  combined: boolean;
 };
 
 export type PageMargins = {
@@ -48,11 +65,51 @@ export type CharacterGroup = {
   title: string;
   chars: string[];
   user_item: boolean;
+  presentation?: "square";
+};
+
+export type PictureSymbolItem = {
+  id?: string;
+  key: string;
+  favorite_key?: string;
+  title: string;
+  preview: string;
+  preview_on_dark: boolean;
+  user_item?: boolean;
 };
 
 export type PictureSymbolGroup = {
   title: string;
-  items: Array<{ key: string; title: string; preview: string; preview_on_dark: boolean }>;
+  items: PictureSymbolItem[];
+  user_group?: boolean;
+};
+
+export type AutoFormatRoleStyle = {
+  font: string;
+  size: number;
+  bold: boolean;
+  marker?: string;
+  custom_marker?: string;
+};
+
+export type AutoFormatSettings = {
+  document_title_template: string;
+  title_template: string;
+  roles: {
+    document_title: AutoFormatRoleStyle;
+    title: AutoFormatRoleStyle;
+    subtitle: AutoFormatRoleStyle;
+    subsubtitle: AutoFormatRoleStyle;
+    body: AutoFormatRoleStyle;
+    table: AutoFormatRoleStyle;
+    reference: AutoFormatRoleStyle;
+  };
+};
+
+export type AutoFormatProfile = {
+  id: string;
+  name: string;
+  settings: AutoFormatSettings;
 };
 
 export type AppSettings = {
@@ -69,7 +126,12 @@ export type AppSettings = {
   toggle_hotkey: string;
   global_hotkeys_enabled: boolean;
   global_hotkeys: Record<string, string>;
+  card_favorites: CardFavorites;
+  character_group_order: string[];
   tab_order: string[];
+  auto_format: AutoFormatSettings;
+  active_auto_format_profile: string;
+  auto_format_profiles: AutoFormatProfile[];
 };
 
 export type IntegrationStatus = {
@@ -102,6 +164,21 @@ export async function setWindowPreferences(
 export async function setWindowInputMode(enabled: boolean): Promise<void> {
   await invoke("set_window_input_mode", { enabled });
 }
+
+export async function focusExternalWindow(hwnd: number): Promise<void> {
+  await invoke("focus_external_window", { hwnd });
+}
+
+export type WindowLayoutState = { active: boolean; message?: string };
+
+export async function readWindowLayoutState(): Promise<WindowLayoutState> {
+  return invoke<WindowLayoutState>("window_layout_state");
+}
+
+export async function arrangeHwpWindows(hwnd: number, pid: number): Promise<WindowLayoutState> {
+  return invoke<WindowLayoutState>("arrange_hwp_windows", { hwpHwnd: hwnd, hwpPid: pid });
+}
+
 
 export async function applyWindowPosition(
   mode: AppSettings["start_position"],

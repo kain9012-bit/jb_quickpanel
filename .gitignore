@@ -3,12 +3,19 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+.signing/
 
 /build/
 /dist/
 /build_packages/
 /release/
 /exe버전관리/
+/output/
+/매뉴얼/원본/assets/
+/매뉴얼/배포본/
+/매뉴얼/도구/검증결과/
+/tauri-prototype/src-tauri/manual/
+/tauri-prototype/src-tauri/support/
 
 *.exe
 *.zip
@@ -24,3 +31,15 @@ hwp_helper_ui_settings.json
 
 # Legacy local copy. Install pywin32 from requirements instead.
 /vendor/
+
+# Source draft PDFs are local reference material, not app assets.
+/기안문/
+
+# Local research, diagnostics, and obsolete generated draft files.
+/.codex_tmp/
+/.ruff_cache/
+/기안문_분석/
+/docs/reviews/
+/test_localsystem.txt
+/kedufine_forms/
+/tauri-prototype/scripts/generate_kedufine_forms.mjs

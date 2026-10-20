@@ -1,27 +1,80 @@
+mod board_update;
+mod window_layout;
+
 use serde_json::{json, Value};
 use std::ffi::c_void;
 use std::io::{BufRead, BufReader, Write};
 #[cfg(debug_assertions)]
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, RecvTimeoutError},
     Arc, Mutex,
 };
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, PhysicalPosition, State, WindowEvent,
+    AppHandle, Manager, PhysicalPosition, PhysicalSize, State, WindowEvent,
 };
 
 struct BackendProcess {
     child: Child,
     input: ChildStdin,
-    output: BufReader<ChildStdout>,
+    output: Receiver<Result<String, String>>,
     next_id: u64,
 }
 
+fn backend_timeout(command: &str) -> Duration {
+    match command {
+        "user_data_backup" | "user_data_restore" => Duration::from_secs(1800),
+        "auto_format_report" => Duration::from_secs(600),
+        "insert_cell_images"
+        | "refit_cell_images"
+        | "user_add_block"
+        | "auto_title_template_analyze"
+        | "auto_title_template_register" => Duration::from_secs(300),
+        _ => Duration::from_secs(90),
+    }
+}
+
+fn log_backend_failure(command: &str, message: &str) {
+    let Some(app_data) = std::env::var_os("APPDATA") else {
+        return;
+    };
+    let directory = PathBuf::from(app_data).join("JbHwpHelper");
+    if std::fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+    let path = directory.join("crash.log");
+    if path
+        .metadata()
+        .map(|meta| meta.len() >= 1_000_000)
+        .unwrap_or(false)
+    {
+        let previous = directory.join("crash.previous.log");
+        let _ = std::fs::remove_file(&previous);
+        let _ = std::fs::rename(&path, previous);
+    }
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(
+            file,
+            "\n================================================================================\n[unix:{timestamp}] backend_transport_failure\ncommand: {}\nmessage: {}",
+            command.chars().take(80).collect::<String>(),
+            message.chars().take(2000).collect::<String>()
+        );
+    }
+}
 impl BackendProcess {
     fn request(&mut self, command: &str, args: Value) -> Result<Value, String> {
         self.next_id += 1;
@@ -33,16 +86,22 @@ impl BackendProcess {
             .flush()
             .map_err(|error| format!("Python 서버 요청을 전송하지 못했습니다: {error}"))?;
 
-        let mut line = String::new();
-        let read = self
-            .output
-            .read_line(&mut line)
-            .map_err(|error| format!("Python 서버 응답을 읽지 못했습니다: {error}"))?;
-        if read == 0 {
-            return Err(
-                "Python COM 서버가 예기치 않게 종료되었습니다. 다시 실행해 주세요.".to_string(),
-            );
-        }
+        let line = match self.output.recv_timeout(backend_timeout(command)) {
+            Ok(Ok(line)) => line,
+            Ok(Err(error)) => return Err(error),
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(
+                    "Python COM 서버가 예기치 않게 종료되었습니다. 다시 실행해 주세요."
+                        .to_string(),
+                )
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(
+                    "한글 응답이 오래 지연되어 작업을 중단했습니다. 문서에 일부 반영되었을 수 있으므로 확인한 뒤 다시 시도해 주세요. 다음 작업에서는 한글 연결을 새로 시작합니다."
+                        .to_string(),
+                )
+            }
+        };
         let response: Value = serde_json::from_str(line.trim())
             .map_err(|error| format!("Python 서버 응답 형식이 올바르지 않습니다: {error}"))?;
         if response.get("id").and_then(Value::as_u64) != Some(request_id) {
@@ -119,7 +178,11 @@ fn spawn_backend(app: &AppHandle) -> Result<BackendProcess, String> {
         }
 
         let mut command = Command::new(python_candidate(&repository_root));
-        command.arg("-u").arg(&server).current_dir(&repository_root);
+        command
+            .arg("-u")
+            .arg(&server)
+            .current_dir(&repository_root)
+            .env("JB_APP_RESOURCE_DIR", prototype_root.join("src-tauri"));
         command
     };
 
@@ -137,7 +200,9 @@ fn spawn_backend(app: &AppHandle) -> Result<BackendProcess, String> {
             ));
         }
         let mut command = Command::new(&backend);
-        command.current_dir(resource_dir);
+        command
+            .current_dir(&resource_dir)
+            .env("JB_APP_RESOURCE_DIR", &resource_dir);
         command
     };
 
@@ -177,10 +242,30 @@ fn spawn_backend(app: &AppHandle) -> Result<BackendProcess, String> {
         .stdout
         .take()
         .ok_or_else(|| "Python 서버 출력 채널을 열지 못했습니다.".to_string())?;
+    let (output_sender, output_receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(output);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if output_sender.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = output_sender
+                        .send(Err(format!("Python 서버 응답을 읽지 못했습니다: {error}")));
+                    break;
+                }
+            }
+        }
+    });
     Ok(BackendProcess {
         child,
         input,
-        output: BufReader::new(output),
+        output: output_receiver,
         next_id: 0,
     })
 }
@@ -212,7 +297,8 @@ async fn hwp_request(
             .as_mut()
             .expect("backend initialized")
             .request(&command, args);
-        if result.is_err() {
+        if let Err(error) = &result {
+            log_backend_failure(&command, error);
             *guard = None;
         }
         result
@@ -278,6 +364,72 @@ fn set_window_input_mode(
     Ok(json!({"ok": true, "input_mode": enabled}))
 }
 
+#[tauri::command]
+#[cfg(target_os = "windows")]
+fn focus_external_window(hwnd: u64) -> Result<Value, String> {
+    const SW_RESTORE: i32 = 9;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn IsWindow(hwnd: *mut c_void) -> i32;
+        fn IsIconic(hwnd: *mut c_void) -> i32;
+        fn ShowWindow(hwnd: *mut c_void, command: i32) -> i32;
+        fn GetForegroundWindow() -> *mut c_void;
+        fn GetWindowThreadProcessId(hwnd: *mut c_void, process_id: *mut u32) -> u32;
+        fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
+        fn BringWindowToTop(hwnd: *mut c_void) -> i32;
+        fn SetForegroundWindow(hwnd: *mut c_void) -> i32;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentThreadId() -> u32;
+    }
+
+    let target = hwnd as usize as *mut c_void;
+    unsafe {
+        if target.is_null() || IsWindow(target) == 0 {
+            return Err("활성화할 한글 창을 찾지 못했습니다.".to_string());
+        }
+
+        let foreground = GetForegroundWindow();
+        if foreground == target {
+            return Ok(json!({"ok": true, "hwnd": hwnd}));
+        }
+
+        let current_thread = GetCurrentThreadId();
+        let foreground_thread = if foreground.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(foreground, std::ptr::null_mut())
+        };
+        let attached_foreground = foreground_thread != 0
+            && foreground_thread != current_thread
+            && AttachThreadInput(current_thread, foreground_thread, 1) != 0;
+
+        if IsIconic(target) != 0 {
+            ShowWindow(target, SW_RESTORE);
+        }
+        BringWindowToTop(target);
+        let foregrounded = SetForegroundWindow(target) != 0;
+
+        if attached_foreground {
+            AttachThreadInput(current_thread, foreground_thread, 0);
+        }
+
+        if !foregrounded && GetForegroundWindow() != target {
+            return Err("한글 창에 키보드 포커스를 전달하지 못했습니다.".to_string());
+        }
+    }
+
+    Ok(json!({"ok": true, "hwnd": hwnd}))
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "windows"))]
+fn focus_external_window(_hwnd: u64) -> Result<Value, String> {
+    Ok(json!({"ok": true}))
+}
+
 #[cfg(target_os = "windows")]
 fn set_no_activate(window: &tauri::WebviewWindow, enabled: bool) {
     const GWL_EXSTYLE: i32 = -20;
@@ -312,6 +464,9 @@ fn set_no_activate(window: &tauri::WebviewWindow, enabled: bool) {
             } else {
                 style & !WS_EX_NOACTIVATE
             };
+            if next_style == style {
+                return;
+            }
             SetWindowLongW(raw, GWL_EXSTYLE, next_style);
             SetWindowPos(
                 raw,
@@ -329,16 +484,85 @@ fn set_no_activate(window: &tauri::WebviewWindow, enabled: bool) {
 #[cfg(not(target_os = "windows"))]
 fn set_no_activate(_window: &tauri::WebviewWindow, _enabled: bool) {}
 
+#[cfg(target_os = "windows")]
+fn window_work_area(window: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
+    const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[repr(C)]
+    struct MonitorInfo {
+        size: u32,
+        monitor: Rect,
+        work: Rect,
+        flags: u32,
+    }
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MonitorFromWindow(hwnd: *mut c_void, flags: u32) -> *mut c_void;
+        fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MonitorInfo) -> i32;
+    }
+
+    let hwnd = window.hwnd().ok()?;
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd.0 as *mut c_void, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            return None;
+        }
+        let mut info = MonitorInfo {
+            size: std::mem::size_of::<MonitorInfo>() as u32,
+            monitor: Rect::default(),
+            work: Rect::default(),
+            flags: 0,
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return None;
+        }
+        Some((
+            info.work.left,
+            info.work.top,
+            info.work.right,
+            info.work.bottom,
+        ))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn window_work_area(_window: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
+    None
+}
+
 fn dock_window(window: &tauri::WebviewWindow) {
-    let Ok(Some(monitor)) = window.primary_monitor() else {
+    let Ok(outer_size) = window.outer_size() else {
         return;
     };
-    let Ok(size) = window.outer_size() else {
+    let Ok(inner_size) = window.inner_size() else {
+        return;
+    };
+    if let Some((left, top, right, bottom)) = window_work_area(window) {
+        let y = top + 42;
+        let available_outer_height = (bottom - y).max(1) as u32;
+        let frame_height = outer_size.height.saturating_sub(inner_size.height);
+        let inner_height = available_outer_height.saturating_sub(frame_height).max(1);
+        let x = (right - outer_size.width as i32 - 12).max(left);
+        let _ = window.set_size(PhysicalSize::new(inner_size.width, inner_height));
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+        return;
+    }
+    let Ok(Some(monitor)) = window.primary_monitor() else {
         return;
     };
     let monitor_position = monitor.position();
     let monitor_size = monitor.size();
-    let x = monitor_position.x + monitor_size.width as i32 - size.width as i32 - 12;
+    let x = monitor_position.x + monitor_size.width as i32 - outer_size.width as i32 - 12;
     let y = monitor_position.y + 42;
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
@@ -373,7 +597,7 @@ fn parse_saved_position(value: &str) -> Option<(i32, i32)> {
 
 #[cfg(test)]
 mod position_tests {
-    use super::parse_saved_position;
+    use super::{backend_timeout, parse_saved_position};
 
     #[test]
     fn parses_current_and_legacy_positions() {
@@ -384,6 +608,14 @@ mod position_tests {
     #[test]
     fn rejects_windows_minimized_sentinel() {
         assert_eq!(parse_saved_position("-32000,-32000"), None);
+    }
+
+    #[test]
+    fn uses_longer_timeouts_for_expensive_hwp_commands() {
+        assert_eq!(backend_timeout("status").as_secs(), 90);
+        assert_eq!(backend_timeout("insert_cell_images").as_secs(), 300);
+        assert_eq!(backend_timeout("auto_format_report").as_secs(), 600);
+        assert_eq!(backend_timeout("user_data_restore").as_secs(), 1800);
     }
 }
 
@@ -420,6 +652,7 @@ fn setup_desktop(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
     let quit_item = MenuItem::with_id(app, "quit", "완전히 종료", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
     let mut tray = TrayIconBuilder::with_id("prototype-tray")
+        .tooltip("JBEdu FORM (JB에듀 폼)")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -461,6 +694,7 @@ fn setup_desktop(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
 pub fn run() {
     tauri::Builder::default()
         .manage(BackendState::default())
+        .manage(window_layout::LayoutState::default())
         .manage(RuntimeState {
             quitting: AtomicBool::new(false),
             close_to_tray: AtomicBool::new(false),
@@ -493,7 +727,13 @@ pub fn run() {
             cancel_auto_format,
             set_window_preferences,
             set_window_input_mode,
-            apply_window_position
+            focus_external_window,
+            apply_window_position,
+            window_layout::arrange_hwp_windows,
+            window_layout::window_layout_state,
+            board_update::check_board_update,
+            board_update::download_board_update,
+            board_update::apply_board_update
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 앱 실행 실패");

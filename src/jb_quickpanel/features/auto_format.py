@@ -1,6 +1,28 @@
 # -*- coding: utf-8 -*-
 from src.jb_quickpanel.core.runtime import *
-from src.jb_quickpanel.features.untagged_report import transform_untagged_report_text
+from src.jb_quickpanel.features.auto_format_settings import (
+    normalize_auto_format_settings,
+)
+from src.jb_quickpanel.features.untagged_report import (
+    convert_untagged_report_to_tagged_text,
+    strip_markdown_emphasis,
+    split_pipe_cells,
+    _is_markdown_separator,
+    _parse_marker,
+)
+
+
+_ROLE_BY_TAG = {
+    "문서제목": "document_title",
+    "제목": "title",
+    "소제목": "subtitle",
+    "소소제목": "subsubtitle",
+    "본문": "body",
+    "참고": "reference",
+}
+_HANGUL_SEQUENCE = ("가", "나", "다", "라", "마", "바", "사", "아", "자", "차", "카", "타", "파", "하")
+_CIRCLED_NUMBERS = ("①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳")
+
 
 def detect_report_tag(line: str):
     s = (line or "").lstrip("﻿")
@@ -13,6 +35,7 @@ def detect_report_tag(line: str):
             return tag, rest
     return None, line
 
+
 def parse_pipe_table_lines(lines):
     rows = []
     max_cols = 0
@@ -22,16 +45,10 @@ def parse_pipe_table_lines(lines):
         raw = str(line).rstrip("\n").strip()
         if raw == "":
             continue
-        # 양끝 파이프는 있으면 제거
-        if raw.startswith("|"):
-            raw = raw[1:].lstrip()
-        if raw.endswith("|"):
-            raw = raw[:-1].rstrip()
-        # Markdown 구분선은 제외
-        compact = raw.replace(" ", "")
-        if compact and set(compact) <= set("|-:"):
+        cols = split_pipe_cells(raw)
+        if _is_markdown_separator(cols):
             continue
-        cols = [c.strip() for c in raw.split("|")]
+        cols = [strip_markdown_emphasis(cell) for cell in cols]
         rows.append(cols)
         if len(cols) > max_cols:
             max_cols = len(cols)
@@ -44,26 +61,29 @@ def parse_pipe_table_lines(lines):
         norm_rows.append(cols)
     return norm_rows, max_cols
 
+
 def normalize_document_title_text(text: str) -> str:
-    s = (text or "")
+    s = text or ""
     if s.startswith("- "):
         return s[2:]
     if s.startswith("-"):
         return s[1:].lstrip()
     return s
+
+
 def split_section_title_text(text: str):
     s = (text or "").strip()
-    m = re.match(r"^(\d+)\.\s*(.*)$", s)
-    if m:
-        return m.group(1).strip(), m.group(2).strip()
-    m = re.match(r"^(\d+)\s+(.*)$", s)
-    if m:
-        return m.group(1).strip(), m.group(2).strip()
+    match = re.match(r"^(\d+)\.\s*(.*)$", s)
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+    match = re.match(r"^(\d+)\s+(.*)$", s)
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
     return "", s
+
+
 def calc_indent(tag: str, current_level: str | None) -> int:
-    if tag == "문서제목":
-        return 0
-    if tag == "제목":
+    if tag in ("문서제목", "제목"):
         return 0
     if tag == "소제목":
         return 2
@@ -82,7 +102,102 @@ def calc_indent(tag: str, current_level: str | None) -> int:
             return 6
         return 4
     return 0
-def transform_report_text(raw_text: str):
+
+
+def _strip_role_marker(tag: str, content: str, custom_marker: str = "") -> str:
+    value = (content or "").strip()
+    custom = (custom_marker or "").strip()
+    if custom and value.startswith(custom) and (
+        value == custom or value[len(custom):].startswith(" ")
+        or (not custom[-1].isalnum() and not value[len(custom):].startswith(custom))
+    ):
+        return value[len(custom):].lstrip()
+    marker = _parse_marker(value)
+    if marker is None:
+        return value
+    if tag in ("제목", "소제목", "소소제목"):
+        return marker.body
+    if tag == "본문" and marker.kind in {"dash", "bullet", "circle", "square"}:
+        return marker.body
+    if tag == "참고" and marker.kind in {"reference", "bullet"}:
+        return marker.body
+    return value
+
+
+def _roman_number(value: int) -> str:
+    number = max(1, int(value))
+    parts = []
+    for amount, numeral in (
+        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+        (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+        (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+    ):
+        while number >= amount:
+            parts.append(numeral)
+            number -= amount
+    return "".join(parts)
+
+
+def _unicode_roman(value: int, *, lower: bool = False) -> str:
+    upper_values = (
+        "Ⅰ", "Ⅱ", "Ⅲ", "Ⅳ", "Ⅴ", "Ⅵ", "Ⅶ", "Ⅷ", "Ⅸ", "Ⅹ",
+        "Ⅺ", "Ⅻ", "ⅩⅢ", "ⅩⅣ", "ⅩⅤ", "ⅩⅥ", "ⅩⅦ", "ⅩⅧ", "ⅩⅨ", "ⅩⅩ",
+    )
+    lower_values = (
+        "ⅰ", "ⅱ", "ⅲ", "ⅳ", "ⅴ", "ⅵ", "ⅶ", "ⅷ", "ⅸ", "ⅹ",
+        "ⅹⅰ", "ⅹⅱ", "ⅹⅲ", "ⅹⅳ", "ⅹⅴ", "ⅹⅵ", "ⅹⅶ", "ⅹⅷ", "ⅹⅸ", "ⅹⅹ",
+    )
+    index = max(1, int(value))
+    values = lower_values if lower else upper_values
+    if index <= len(values):
+        return values[index - 1]
+    fallback = _roman_number(index)
+    return fallback.lower() if lower else fallback
+
+
+def _marker_prefix(tag: str, marker: str, count: int, custom_marker: str = "") -> str:
+    if marker == "none":
+        return ""
+    if marker == "custom":
+        custom = (custom_marker or "").strip()
+        return f"{custom} " if custom else ""
+
+    index = max(1, int(count or 1))
+    if marker == "number_dot":
+        return f"{index}. "
+    if marker == "number_paren":
+        return f"{index}) "
+    if marker in ("hangul_dot", "hangul_paren"):
+        letter = _HANGUL_SEQUENCE[min(index, len(_HANGUL_SEQUENCE)) - 1]
+        return f"{letter}) " if marker == "hangul_paren" else f"{letter}. "
+    if marker == "roman_upper_dot":
+        return f"{_unicode_roman(index)}. "
+    if marker == "roman_lower_dot":
+        return f"{_unicode_roman(index, lower=True)}. "
+    if marker == "number_circle":
+        return _CIRCLED_NUMBERS[min(index, len(_CIRCLED_NUMBERS)) - 1] + " "
+
+    symbols = {
+        "dash": "- ",
+        "asterisk": "* ",
+        "circle": "○ ",
+        "square": "□ ",
+        "bullet": "• ",
+        "reference": "※ ",
+    }
+    return symbols.get(marker, "")
+
+
+def _section_number_text(marker: str, marker_prefix: str) -> str:
+    value = marker_prefix.strip()
+    if marker in {"number_dot", "hangul_dot", "roman_upper_dot", "roman_lower_dot"}:
+        return value.removesuffix(".")
+    return value
+
+
+def transform_report_text(raw_text: str, format_settings=None):
+    options = normalize_auto_format_settings(format_settings)
+    roles = options["roles"]
     normalized = raw_text.replace("\r\n", "\n").replace("\r", "\n")
     lines = normalized.split("\n")
     current_level = None
@@ -90,15 +205,22 @@ def transform_report_text(raw_text: str):
     changed_count = 0
     in_table = False
     table_lines = []
+    heading_counts = {"제목": 0, "소제목": 0, "소소제목": 0}
 
     def flush_table():
         nonlocal table_lines, results
         rows, max_cols = parse_pipe_table_lines(table_lines)
         if rows:
+            table_style = roles["table"]
             results.append({
                 "tag": "표",
                 "text": "",
-                "style": None,
+                "style": {
+                    "font": table_style["font"],
+                    "size": int(table_style["size"]),
+                    "bold": bool(table_style.get("bold", False)),
+                    "caret_indent_at": None,
+                },
                 "rows": rows,
                 "cols": max_cols,
             })
@@ -112,61 +234,106 @@ def transform_report_text(raw_text: str):
                 changed_count += 1
                 flush_table()
                 in_table = False
-            else:
+                if content.strip():
+                    results.append({"tag": None, "text": content, "style": None})
+                continue
+            if tag is None:
                 table_lines.append(line)
-            continue
-
+                continue
+            flush_table()
+            in_table = False
         if line == "":
             results.append({"tag": None, "text": "", "style": None})
             continue
-
         if tag == TABLE_START_TAG:
             changed_count += 1
+            if content.strip():
+                results.append({"tag": None, "text": content, "style": None})
             in_table = True
             table_lines = []
             continue
-
         if tag == TABLE_END_TAG:
             changed_count += 1
             continue
-
         if tag is None:
             results.append({"tag": None, "text": line, "style": None})
             continue
 
         changed_count += 1
+        content = strip_markdown_emphasis(content)
         if tag == "제목":
             current_level = "제목"
+            heading_counts["제목"] += 1
+            heading_counts["소제목"] = 0
+            heading_counts["소소제목"] = 0
         elif tag == "소제목":
             current_level = "소제목"
+            heading_counts["소제목"] += 1
+            heading_counts["소소제목"] = 0
         elif tag == "소소제목":
             current_level = "소소제목"
+            heading_counts["소소제목"] += 1
 
+        marker_prefix = ""
+        marker = "none"
+        marker_content = content
         if tag == "문서제목":
             content = normalize_document_title_text(content)
+        elif tag in ("제목", "소제목", "소소제목", "본문", "참고"):
+            role = _ROLE_BY_TAG[tag]
+            marker = str(roles[role].get("marker") or "none")
+            custom_marker = str(roles[role].get("custom_marker") or "")
+            marker_content = _strip_role_marker(tag, content, custom_marker)
+            marker_prefix = _marker_prefix(
+                tag,
+                marker,
+                heading_counts.get(tag, 0),
+                custom_marker,
+            )
+            content = marker_prefix + marker_content
 
         indent = calc_indent(tag, current_level)
         final_text = (" " * indent) + content
-        style = REPORT_TAG_RULES[tag].copy()
+        role_style = roles[_ROLE_BY_TAG[tag]]
+        style = {
+            "font": role_style["font"],
+            "size": int(role_style["size"]),
+            "bold": bool(role_style.get("bold", False)),
+        }
         if tag in ("본문", "참고"):
-            style["caret_indent_at"] = indent + 2
+            style["caret_indent_at"] = indent + len(marker_prefix)
         else:
             style["caret_indent_at"] = None
-        results.append({"tag": tag, "text": final_text, "style": style})
+        result = {"tag": tag, "text": final_text, "style": style}
+        if tag == "제목":
+            result["number_text"] = _section_number_text(marker, marker_prefix)
+            result["body_text"] = marker_content.strip()
+        results.append(result)
 
     if in_table:
         flush_table()
-
     return results, changed_count
 
 
-def transform_auto_format_text(raw_text: str):
-    tagged_items, tagged_count = transform_report_text(raw_text)
+def transform_untagged_as_tagged_text(
+    raw_text: str, *, has_external_table: bool = False, format_settings=None
+):
+    virtual_tagged_text, _ = convert_untagged_report_to_tagged_text(
+        raw_text,
+        has_external_table=has_external_table,
+    )
+    return transform_report_text(virtual_tagged_text, format_settings)
+
+
+def transform_auto_format_text(raw_text: str, format_settings=None):
+    tagged_items, tagged_count = transform_report_text(raw_text, format_settings)
     if tagged_count > 0:
         return tagged_items, tagged_count, "tagged"
-    inferred_items, inferred_count = transform_untagged_report_text(raw_text)
+    inferred_items, inferred_count = transform_untagged_as_tagged_text(
+        raw_text,
+        format_settings=format_settings,
+    )
     return inferred_items, inferred_count, "inferred"
-
 
 PROMPT_FILENAME = "report_format_prompt.txt"
 UI_SETTINGS_FILENAME = "hwp_helper_ui_settings.json"

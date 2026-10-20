@@ -1,0 +1,195 @@
+name: 설치본 빌드 및 GitHub Release 발행
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: 소스 내려받기
+        uses: actions/checkout@v4
+
+      - name: 태그와 버전 일치 확인
+        shell: pwsh
+        run: |
+          $tagVersion = "${{ github.ref_name }}".TrimStart("v")
+          if ($tagVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "태그는 v4.0.1 형식이어야 합니다."
+          }
+
+          $root = "tauri-prototype"
+          $packageVersion = (Get-Content "$root/package.json" -Raw -Encoding utf8 | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content "$root/src-tauri/tauri.conf.json" -Raw -Encoding utf8 | ConvertFrom-Json).version
+          $cargoVersion = (Select-String -Path "$root/src-tauri/Cargo.toml" -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+
+          Write-Host "태그 $tagVersion / package.json $packageVersion / tauri.conf $tauriVersion / Cargo.toml $cargoVersion"
+          if ($packageVersion -ne $tagVersion -or $tauriVersion -ne $tagVersion -or $cargoVersion -ne $tagVersion) {
+            throw "버전이 서로 다릅니다. tauri-prototype/set_version.ps1로 맞춘 뒤 새 태그를 만드세요."
+          }
+
+      - name: 업데이트 서명키 준비
+        shell: pwsh
+        env:
+          RAW_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RAW_KEY)) {
+            throw "TAURI_SIGNING_PRIVATE_KEY 저장소 시크릿이 없습니다. 서명 없는 설치본은 자동 업데이트에 사용할 수 없습니다."
+          }
+
+          $key = $env:RAW_KEY.Trim()
+          if ($key -match '\s') {
+            throw "TAURI_SIGNING_PRIVATE_KEY에는 줄바꿈이나 공백이 없어야 합니다."
+          }
+          try {
+            $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($key))
+          } catch {
+            throw "TAURI_SIGNING_PRIVATE_KEY가 올바른 base64 형식이 아닙니다."
+          }
+          if (-not $decoded.StartsWith("untrusted comment:")) {
+            throw "공개키가 아니라 .signing/tauri.key 개인키 전체를 등록해야 합니다."
+          }
+
+          Write-Host "::add-mask::$key"
+          $signingDir = "tauri-prototype/.signing"
+          New-Item -ItemType Directory -Force -Path $signingDir | Out-Null
+          [IO.File]::WriteAllText("$signingDir/tauri.key", $key, (New-Object Text.UTF8Encoding($false)))
+
+          $config = Get-Content "tauri-prototype/update-config.json" -Raw -Encoding utf8 | ConvertFrom-Json
+          [IO.File]::WriteAllText("$signingDir/tauri.key.pub", [string]$config.app.public_key, (New-Object Text.UTF8Encoding($false)))
+
+      - name: Python 준비
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python 빌드 의존성 설치
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: pnpm 준비
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.20.0
+
+      - name: Node 준비
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: tauri-prototype/pnpm-lock.yaml
+
+      - name: 프론트엔드 의존성 설치
+        working-directory: tauri-prototype
+        run: pnpm install --frozen-lockfile
+
+      - name: 사용자 매뉴얼 생성 환경 준비
+        shell: pwsh
+        run: |
+          $manualRuntime = Join-Path $env:RUNNER_TEMP "jb-manual-runtime"
+          npm install --prefix $manualRuntime --no-save --package-lock=false playwright@1.62.1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $playwright = Join-Path $manualRuntime "node_modules/playwright"
+          node (Join-Path $playwright "cli.js") install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "MANUAL_PLAYWRIGHT_PATH=$playwright" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Rust 준비
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust 캐시
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-prototype/src-tauri
+
+      - name: 테스트·설치본 빌드·서명
+        shell: pwsh
+        env:
+          SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $python = (Get-Command python.exe).Source
+          $pnpm = (Get-Command pnpm.cmd).Source
+          $buildArgs = @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", "tauri-prototype/build_v4.ps1",
+            "-PythonExe", $python,
+            "-PnpmExe", $pnpm
+          )
+          if (-not [string]::IsNullOrEmpty($env:SIGNING_PASSWORD)) {
+            $buildArgs += @("-SigningPassword", [string]$env:SIGNING_PASSWORD)
+          }
+          & powershell @buildArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: GitHub Release 발행
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $setup = "release/JBEduForm_v${version}_Setup.exe"
+          $zip = "release/JBEduForm_v${version}.zip"
+          $signature = "$setup.sig"
+          $manualHtml = "매뉴얼/배포본/JBEdu_FORM_사용자매뉴얼_v.${version}.html"
+          $manualPdf = "매뉴얼/배포본/JBEdu_FORM_사용자매뉴얼_v.${version}.pdf"
+          foreach ($path in @($setup, $zip, $signature, $manualHtml, $manualPdf)) {
+            if (-not (Test-Path -LiteralPath $path)) { throw "릴리스 파일을 찾지 못했습니다: $path" }
+          }
+
+          $notes = @"
+          ## 설치 방법
+
+          `JBEduForm_v${version}_Setup.exe`를 내려받아 실행하세요.
+
+          ## 교육청 게시판 자동 업데이트 등록
+
+          `JBEduForm_v${version}.zip`과 `.sig`를 내려받은 뒤 ZIP을 교육청 게시판에 첨부하세요.
+          첨부 링크와 `.sig`로 `JBEDU-FORM` 업데이트 표식을 생성해 게시글 본문에 반영하면 설치된 앱이 새 버전을 자동으로 확인합니다.
+          "@
+
+          if (gh release view "${{ github.ref_name }}" 2>$null) {
+            gh release upload "${{ github.ref_name }}" $setup $zip $signature $manualHtml $manualPdf --clobber
+            gh release edit "${{ github.ref_name }}" --title "JBEdu FORM (JB에듀 폼) v.$version" --notes $notes
+          } else {
+            gh release create "${{ github.ref_name }}" $setup $zip $signature $manualHtml $manualPdf `
+              --title "JBEdu FORM (JB에듀 폼) v.$version" `
+              --notes $notes `
+              --latest
+          }
+
+      - name: 표준 latest.json 추가
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          $setupName = "JBEduForm_v${version}_Setup.exe"
+          $signaturePath = "release/$setupName.sig"
+          $release = gh release view $tag --json assets | ConvertFrom-Json
+          $setupAsset = $release.assets | Where-Object { $_.name -eq $setupName } | Select-Object -First 1
+          if (-not $setupAsset) { throw "GitHub Release에서 설치파일을 찾지 못했습니다: $setupName" }
+
+          $payload = [ordered]@{
+            version = $version
+            notes = "JBEdu FORM (JB에듀 폼) v.$version"
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = (Get-Content -LiteralPath $signaturePath -Raw -Encoding utf8).Trim()
+                url = $setupAsset.url
+              }
+            }
+          }
+          $json = $payload | ConvertTo-Json -Depth 10
+          [IO.File]::WriteAllText("latest.json", $json, (New-Object Text.UTF8Encoding($false)))
+          gh release upload $tag latest.json --clobber

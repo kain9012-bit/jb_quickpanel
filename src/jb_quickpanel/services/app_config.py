@@ -4,13 +4,22 @@ import os
 import subprocess
 import sys
 import traceback
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from src.jb_quickpanel.features.auto_format_settings import (
+    DEFAULT_AUTO_FORMAT_SETTINGS,
+    DEFAULT_AUTO_FORMAT_PROFILE_ID,
+    default_auto_format_profiles,
+)
+
 
 APP_DIR_NAME = "JbHwpHelper"
-SETTINGS_VERSION = 5
+SETTINGS_VERSION = 12
+CARD_FAVORITE_KINDS = ("style", "form", "kedufine_form", "symbol", "page")
+MAX_CRASH_LOG_BYTES = 1_000_000
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "version": SETTINGS_VERSION,
@@ -25,6 +34,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "toggle_hotkey": "Ctrl+Alt+H",
     "global_hotkeys_enabled": True,
     "global_hotkeys": {},
+    "card_favorites": {kind: [] for kind in CARD_FAVORITE_KINDS},
+    "character_group_order": [],
+    "auto_format": deepcopy(DEFAULT_AUTO_FORMAT_SETTINGS),
+    "active_auto_format_profile": DEFAULT_AUTO_FORMAT_PROFILE_ID,
+    "auto_format_profiles": default_auto_format_profiles(),
     "start_menu_auto_done": False,
     "start_menu_signature": "",
 }
@@ -45,18 +59,86 @@ def crash_log_path() -> Path:
     return app_data_dir() / "crash.log"
 
 
+def _rotate_crash_log(path: Path) -> None:
+    try:
+        if not path.exists() or path.stat().st_size < MAX_CRASH_LOG_BYTES:
+            return
+        previous = path.with_name("crash.previous.log")
+        if previous.exists():
+            previous.unlink()
+        path.replace(previous)
+    except Exception:
+        pass
+
+
+def log_command_failure(
+    command: str,
+    message: str,
+    *,
+    context: dict[str, Any] | None = None,
+    exception: BaseException | None = None,
+) -> Path:
+    path = crash_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _rotate_crash_log(path)
+    with path.open("a", encoding="utf-8") as file:
+        file.write("\n" + "=" * 80 + "\n")
+        file.write(f"[{datetime.now().isoformat(timespec='seconds')}] command_failure\n")
+        file.write(f"command: {str(command or '')[:80]}\n")
+        file.write(f"message: {str(message or '')[:2000]}\n")
+        if context:
+            file.write(
+                "context: "
+                + json.dumps(context, ensure_ascii=False, default=str)[:4000]
+                + "\n"
+            )
+        if exception is not None:
+            traceback.print_exception(
+                type(exception), exception, exception.__traceback__, file=file
+            )
+    return path
+
+def normalize_card_favorites(raw: Any) -> dict[str, list[str]]:
+    values = raw if isinstance(raw, dict) else {}
+    result = {}
+    for kind in CARD_FAVORITE_KINDS:
+        keys = values.get(kind)
+        result[kind] = list(dict.fromkeys(
+            key for key in (keys if isinstance(keys, list) else [])
+            if isinstance(key, str) and key.strip() and len(key) <= 512
+        ))
+    return result
+
+
+def normalize_character_group_order(raw: Any) -> list[str]:
+    return list(dict.fromkeys(
+        key for key in (raw if isinstance(raw, list) else [])
+        if isinstance(key, str) and key.strip() and len(key) <= 512
+    ))
+
+
 def _merged_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
-    settings = dict(DEFAULT_SETTINGS)
+    settings = deepcopy(DEFAULT_SETTINGS)
     if isinstance(raw, dict):
         settings.update(raw)
+        if "auto_format_profiles" not in raw:
+            # v4.1.6 이하의 단일 설정은 전체 기능 로딩 단계에서 기본 프로필로 이전한다.
+            settings["auto_format_profiles"] = []
+            settings["active_auto_format_profile"] = ""
     settings["version"] = SETTINGS_VERSION
+    settings["card_favorites"] = normalize_card_favorites(settings.get("card_favorites"))
+    settings["character_group_order"] = normalize_character_group_order(settings.get("character_group_order"))
+    if isinstance(raw, dict) and raw.get("version") == 11:
+        # Earlier favorites were stored newest first; migrate once to registration order.
+        for keys in settings["card_favorites"].values():
+            keys.reverse()
     return settings
 
 
 def load_settings() -> dict[str, Any]:
     path = settings_path()
     if not path.exists():
-        return dict(DEFAULT_SETTINGS)
+        return deepcopy(DEFAULT_SETTINGS)
     try:
         with path.open("r", encoding="utf-8") as file:
             return _merged_settings(json.load(file))
@@ -67,7 +149,7 @@ def load_settings() -> dict[str, Any]:
             path.replace(backup)
         except Exception:
             pass
-        return dict(DEFAULT_SETTINGS)
+        return deepcopy(DEFAULT_SETTINGS)
 
 
 def save_settings(settings: dict[str, Any]) -> None:
@@ -89,6 +171,7 @@ def save_settings(settings: dict[str, Any]) -> None:
 def log_crash(exc_type, exc_value, exc_traceback) -> Path:
     path = crash_log_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    _rotate_crash_log(path)
     with path.open("a", encoding="utf-8") as file:
         file.write("\n" + "=" * 80 + "\n")
         traceback.print_exception(exc_type, exc_value, exc_traceback, file=file)
@@ -120,8 +203,9 @@ def open_path(path: str | os.PathLike[str]) -> None:
 
 
 RUN_VALUE_NAME = "JbHwpHelper"
-APP_TITLE = "전북교육 한글 서식도우미"
-LEGACY_SHORTCUT_NAME = f"{APP_TITLE}.lnk"
+APP_TITLE = "JBEdu FORM (JB에듀 폼)"
+LEGACY_APP_TITLE = "전북교육 한글 서식도우미"
+LEGACY_SHORTCUT_NAME = f"{LEGACY_APP_TITLE}.lnk"
 
 
 def _quote(value: str) -> str:
@@ -208,8 +292,7 @@ def _start_menu_folder() -> Path:
 
 
 def start_menu_shortcut_name(app_version: str) -> str:
-    version = str(app_version or "").strip()
-    return f"{APP_TITLE} ({version}).lnk" if version else LEGACY_SHORTCUT_NAME
+    return f"{APP_TITLE}.lnk"
 
 
 def start_menu_shortcut_path(app_version: str) -> Path:
@@ -220,10 +303,20 @@ def _is_own_shortcut_name(name: str) -> bool:
     value = str(name or "").casefold()
     if value == LEGACY_SHORTCUT_NAME.casefold():
         return True
-    prefix = f"{APP_TITLE} (v".casefold()
-    return value.startswith(prefix) and value.endswith(").lnk")
-
-
+    if not value.endswith(".lnk"):
+        return False
+    stem = value[:-4]
+    for title in (APP_TITLE.casefold(), LEGACY_APP_TITLE.casefold()):
+        if stem == title:
+            return True
+        if not stem.startswith(title):
+            continue
+        suffix = stem[len(title):].strip()
+        if suffix.startswith("(") and suffix.endswith(")"):
+            suffix = suffix[1:-1].strip()
+        if suffix.startswith("v") and any(char.isdigit() for char in suffix):
+            return True
+    return False
 def start_menu_shortcut_paths() -> list[Path]:
     folder = _start_menu_folder()
     return sorted(
@@ -283,7 +376,7 @@ def set_start_menu_registered(enabled: bool, app_version: str) -> None:
     shortcut.TargetPath = target
     shortcut.Arguments = args
     shortcut.WorkingDirectory = workdir
-    shortcut.Description = f"{APP_TITLE} {app_version}".strip()
+    shortcut.Description = APP_TITLE
     shortcut.IconLocation = launch_icon_path()
     shortcut.Save()
 

@@ -14,43 +14,50 @@
     {
       "id": "b01",
       "title": "제목박스",
-      "file": "blocks_hwp/제목박스.hwp",
+      "file": "blocks_hwp/제목박스.hwpx",
+      "kedufine_file": "blocks_hwp/제목박스.hwp",
       "thumb": "thumbs/제목박스.png"
     },
     {
       "id": "b02",
       "title": "붙임박스",
-      "file": "blocks_hwp/붙임박스.hwp",
+      "file": "blocks_hwp/붙임박스.hwpx",
+      "kedufine_file": "blocks_hwp/붙임박스.hwp",
       "thumb": "thumbs/붙임박스.png"
     },
     {
       "id": "b03",
       "title": "표박스",
-      "file": "blocks_hwp/표박스.hwp",
+      "file": "blocks_hwp/표박스.hwpx",
+      "kedufine_file": "blocks_hwp/표박스.hwp",
       "thumb": "thumbs/표박스.png"
     },
     {
       "id": "b04",
       "title": "소제목박스",
-      "file": "blocks_hwp/소제목박스.hwp",
+      "file": "blocks_hwp/소제목박스.hwpx",
+      "kedufine_file": "blocks_hwp/소제목박스.hwp",
       "thumb": "thumbs/소제목박스.png"
     },
     {
       "id": "b05",
       "title": "참고박스",
-      "file": "blocks_hwp/참고박스.hwp",
+      "file": "blocks_hwp/참고박스.hwpx",
+      "kedufine_file": "blocks_hwp/참고박스.hwp",
       "thumb": "thumbs/참고박스.png"
     },
     {
       "id": "b06",
       "title": "3단계절차박스",
-      "file": "blocks_hwp/3단계절차박스.hwp",
+      "file": "blocks_hwp/3단계절차박스.hwpx",
+      "kedufine_file": "blocks_hwp/3단계절차박스.hwp",
       "thumb": "thumbs/3단계절차박스.png"
     },
     {
       "id": "b07",
       "title": "4단계절차박스",
-      "file": "blocks_hwp/4단계절차박스.hwp",
+      "file": "blocks_hwp/4단계절차박스.hwpx",
+      "kedufine_file": "blocks_hwp/4단계절차박스.hwp",
       "thumb": "thumbs/4단계절차박스.png"
     }
   ],
@@ -58,25 +65,25 @@
     {
       "id": "f01",
       "title": "기본보고서",
-      "file": "forms_hwp/기본보고서.hwp",
+      "file": "forms_hwp/기본보고서.hwpx",
       "thumb": "forms_thumbs/기본보고서.png"
     },
     {
       "id": "f02",
       "title": "보도자료",
-      "file": "forms_hwp/보도자료.hwp",
+      "file": "forms_hwp/보도자료.hwpx",
       "thumb": "forms_thumbs/보도자료.png"
     },
     {
       "id": "f03",
       "title": "전략회의자료",
-      "file": "forms_hwp/전략회의자료.hwp",
+      "file": "forms_hwp/전략회의자료.hwpx",
       "thumb": "forms_thumbs/전략회의자료.png"
     },
     {
       "id": "f04",
       "title": "주요업무 정책기획과",
-      "file": "forms_hwp/주요업무 정책기획과.hwp",
+      "file": "forms_hwp/주요업무 정책기획과.hwpx",
       "thumb": "forms_thumbs/주요업무 정책기획과.png"
     }
   ],
@@ -266,8 +273,17 @@
   "page_items": [
     {
       "id": "basic_report",
-      "title": "기본 보고서 편집용지",
-      "thumb": "기본_보고서.png"
+      "title": "기본 보고서 편집용지(세로)",
+      "thumb": "기본_보고서.png",
+      "orientation": "portrait",
+      "paper_size": { "width": 210, "height": 297 }
+    },
+    {
+      "id": "basic_report_landscape",
+      "title": "기본 보고서 편집용지(가로)",
+      "thumb": "기본_보고서.png",
+      "orientation": "landscape",
+      "paper_size": { "width": 210, "height": 297 }
     }
   ],
   "table_tools": [
