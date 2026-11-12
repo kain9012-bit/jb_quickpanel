@@ -1,6 +1,6 @@
 [package]
 name = "jb-hwp-helper"
-version = "0.0.7"
+version = "0.0.8"
 description = "전북교육 한글 서식도우미"
 authors = ["전북특별자치도교육청"]
 edition = "2021"

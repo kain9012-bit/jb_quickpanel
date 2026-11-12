@@ -11,7 +11,9 @@ venv/
 /release/
 /exe버전관리/
 /output/
-/매뉴얼/원본/assets/
+/매뉴얼/원본/assets/*
+!/매뉴얼/원본/assets/SUIT-Variable.woff2
+!/매뉴얼/원본/assets/SUIT-OFL.txt
 /매뉴얼/배포본/
 /매뉴얼/도구/검증결과/
 /tauri-prototype/src-tauri/manual/

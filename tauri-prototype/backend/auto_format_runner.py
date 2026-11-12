@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable
 
@@ -332,7 +333,7 @@ def _inferred_paragraph_items(transformed):
 
 def _inspect_auto_format_selection(bridge):
     try:
-        ok, inspection = bridge.inspect_selected_report_content()
+        ok, inspection = bridge.inspect_selected_report_content(paragraphs_for_tables_only=True)
     except Exception:
         ok, inspection = False, None
     if not ok or not isinstance(inspection, dict) or not inspection.get("controls_complete", False):
@@ -376,44 +377,46 @@ def _write_auto_format_items(bridge, transformed, options, title_template, secti
                 if not ok:
                     return False, message, False
             line_text, tag, style = item["text"], item.get("tag"), item.get("style")
-            if tag == "표":
-                style = style or options["roles"]["table"]
-                ok, message = bridge.insert_pipe_table(
-                    item.get("rows") or [], font_name=str(style["font"]),
-                    font_size_pt=int(style["size"]), bold=bool(style.get("bold", False)),
-                )
-                if ok:
-                    ok, message = _settle_cursor_after_inserted_table(bridge)
-            elif style is None:
-                ok, message = bridge.insert_text(line_text)
-            elif tag == "문서제목":
-                ok, message = _insert_document_title(
-                    bridge, title_template, line_text, style,
-                    **({"append_paragraph_break": False} if not append_title_break else {}),
-                )
-            elif tag == "제목":
-                number, body = item.get("number_text"), item.get("body_text")
-                if number is None or body is None:
-                    number, body = split_section_title_text(line_text.strip())
-                ok, message = _insert_section_title(
-                    bridge, section_template, number, body, style, line_text,
-                    **({"append_paragraph_break": False} if not append_title_break else {}),
-                )
-            else:
-                ok, message = bridge.insert_report_line(
-                    line_text, font_name=style["font"], font_size_pt=int(style["size"]),
-                    bold=bool(style.get("bold", False)),
-                )
-                if ok and style.get("caret_indent_at") is not None:
-                    ok, message = bridge.apply_indent_at_caret_for_current_para(int(style["caret_indent_at"]))
-            if not ok:
-                return False, message, False
-            if cancelled():
-                return False, "", True
-            if index < total - 1 and tag not in {"문서제목", "제목", "표"}:
-                ok, message = bridge.insert_text("\r\n")
+            plain_paragraph = tag not in {"문서제목", "제목", "표"}
+            with bridge.auto_format_paragraph() if plain_paragraph else nullcontext():
+                if tag == "표":
+                    style = style or options["roles"]["table"]
+                    ok, message = bridge.insert_pipe_table(
+                        item.get("rows") or [], font_name=str(style["font"]),
+                        font_size_pt=int(style["size"]), bold=bool(style.get("bold", False)),
+                    )
+                    if ok:
+                        ok, message = _settle_cursor_after_inserted_table(bridge)
+                elif style is None:
+                    ok, message = bridge.insert_text(line_text)
+                elif tag == "문서제목":
+                    ok, message = _insert_document_title(
+                        bridge, title_template, line_text, style,
+                        **({"append_paragraph_break": False} if not append_title_break else {}),
+                    )
+                elif tag == "제목":
+                    number, body = item.get("number_text"), item.get("body_text")
+                    if number is None or body is None:
+                        number, body = split_section_title_text(line_text.strip())
+                    ok, message = _insert_section_title(
+                        bridge, section_template, number, body, style, line_text,
+                        **({"append_paragraph_break": False} if not append_title_break else {}),
+                    )
+                else:
+                    ok, message = bridge.insert_report_line(
+                        line_text, font_name=style["font"], font_size_pt=int(style["size"]),
+                        bold=bool(style.get("bold", False)),
+                    )
+                    if ok and style.get("caret_indent_at") is not None:
+                        ok, message = bridge.apply_indent_at_caret_for_current_para(int(style["caret_indent_at"]))
                 if not ok:
                     return False, message, False
+                if cancelled():
+                    return False, "", True
+                if index < total - 1 and plain_paragraph:
+                    ok, message = bridge.insert_text("\r\n")
+                    if not ok:
+                        return False, message, False
         return True, "OK", False
     except Exception as exc:
         return False, f"서식 작성 중 오류: {exc}", False

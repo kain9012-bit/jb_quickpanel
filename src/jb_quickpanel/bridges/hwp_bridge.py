@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from contextlib import contextmanager
+
 from src.jb_quickpanel.core.runtime import *
 from src.jb_quickpanel.features.cell_text import *
 from src.jb_quickpanel.features.cell_edges import CellEdgeEditor
@@ -23,6 +25,7 @@ class HwpBridge:
     def __init__(self):
         self.hwp = None
         self._auto_format_transaction = None
+        self._auto_format_paragraph_transaction = None
         self._cell_span_prop_action = None
         self._cell_span_prop_available = None
     def _execute_action(self, action, parameter_set):
@@ -73,7 +76,10 @@ class HwpBridge:
         if transaction is not None:
             try:
                 transaction._check_document()
-                if self.hwp is transaction.hwp and hwp_connection_matches_visible_target(self.hwp):
+                if self.hwp is transaction.hwp and (
+                    self._auto_format_paragraph_transaction is transaction
+                    or hwp_connection_matches_visible_target(self.hwp)
+                ):
                     return True, "OK"
             except Exception:
                 pass
@@ -82,6 +88,19 @@ class HwpBridge:
             return True, "OK"
         self.reset()
         return self.connect_without_focus()
+
+    @contextmanager
+    def auto_format_paragraph(self):
+        transaction = self._auto_format_transaction
+        ok, message = self.ensure()
+        if not ok:
+            raise RuntimeError(message)
+        # Reuse only the window check; each command still checks the document ID.
+        self._auto_format_paragraph_transaction = transaction
+        try:
+            yield
+        finally:
+            self._auto_format_paragraph_transaction = None
     def _retry_once_with_reconnect(self, fn):
         try:
             return fn()
@@ -264,6 +283,11 @@ class HwpBridge:
             return False, str(exc)
 
     def commit_auto_format_rewrite(self, transaction):
+        if self._auto_format_transaction is not transaction:
+            return False, "현재 자동 서식 작업을 확인하지 못했습니다."
+        ok, message = self.ensure()
+        if not ok:
+            return False, message
         try:
             transaction.commit()
             self._auto_format_transaction = None
@@ -1524,7 +1548,7 @@ class HwpBridge:
         except Exception:
             return False
 
-    def inspect_selected_report_content(self):
+    def inspect_selected_report_content(self, *, paragraphs_for_tables_only=False):
         """선택 영역의 본문 문단과 실제 한글 표 개체를 원본 변경 없이 조사한다."""
         ok, msg = self.ensure()
         if not ok:
@@ -1533,10 +1557,13 @@ class HwpBridge:
         if not position_range:
             return False, "선택 영역의 위치를 확인하지 못했습니다."
         start, end = position_range
+        if start[0] != end[0]:
+            return False, "선택 영역의 위치를 확인하지 못했습니다."
         native_table_positions = []
         seen_table_positions = set()
         native_object_positions = []
         controls_complete = True
+        scan_attempted = False
 
         try:
             ctrl = getattr(self.hwp, "HeadCtrl", None)
@@ -1567,6 +1594,18 @@ class HwpBridge:
             else:
                 controls_complete = False
 
+            inspection = {
+                "paragraphs": [],
+                "native_table_positions": native_table_positions,
+                "native_object_positions": native_object_positions,
+                "controls_complete": controls_complete,
+            }
+            if paragraphs_for_tables_only and (
+                not native_table_positions or native_object_positions or not controls_complete
+            ):
+                return True, inspection
+
+            scan_attempted = True
             if not self.hwp.InitScan(0, 0x00FF, 0, 0, 0, 0):
                 return False, "선택 영역의 일반 문단 검색을 시작하지 못했습니다."
 
@@ -1615,27 +1654,23 @@ class HwpBridge:
             else:
                 return False, "선택 문단이 너무 많아 검색을 중단했습니다."
 
-            paragraphs = [paragraph_map[key] for key in paragraph_order]
-            return True, {
-                "paragraphs": paragraphs,
-                "native_table_positions": native_table_positions,
-                "native_object_positions": native_object_positions,
-                "controls_complete": controls_complete,
-            }
+            inspection["paragraphs"] = [paragraph_map[key] for key in paragraph_order]
+            return True, inspection
         except Exception as exc:
             if is_rpc_error(exc):
                 self.reset()
             return False, f"선택 영역 구조 확인 실패: {exc}"
         finally:
-            try:
-                self.hwp.ReleaseScan()
-            except Exception:
-                pass
-            try:
-                if not self._restore_selected_report_range(position_range):
+            if scan_attempted:
+                try:
+                    self.hwp.ReleaseScan()
+                except Exception:
+                    pass
+                try:
+                    if not self._restore_selected_report_range(position_range):
+                        return False, "원본 블록을 다시 지정하지 못해 작업을 중단했습니다."
+                except Exception:
                     return False, "원본 블록을 다시 지정하지 못해 작업을 중단했습니다."
-            except Exception:
-                return False, "원본 블록을 다시 지정하지 못해 작업을 중단했습니다."
 
     def apply_inferred_report_paragraphs(
         self,

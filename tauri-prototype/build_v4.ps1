@@ -7,7 +7,7 @@
 
 $ErrorActionPreference = "Stop"
 $PrototypeRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PackageJson = Get-Content -Raw -LiteralPath (Join-Path $PrototypeRoot "package.json") | ConvertFrom-Json
+$PackageJson = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $PrototypeRoot "package.json") | ConvertFrom-Json
 $InternalVersion = [string]$PackageJson.version
 if ($InternalVersion -notmatch '^\d+\.\d+\.\d+$') {
     throw "package.json 버전이 올바른 형식이 아닙니다: $InternalVersion"
@@ -15,7 +15,7 @@ if ($InternalVersion -notmatch '^\d+\.\d+\.\d+$') {
 $DisplayVersion = "v.$InternalVersion"
 $RepositoryRoot = Split-Path -Parent $PrototypeRoot
 $TauriRoot = Join-Path $PrototypeRoot "src-tauri"
-$TauriConfig = Get-Content -Raw -LiteralPath (Join-Path $TauriRoot "tauri.conf.json") | ConvertFrom-Json
+$TauriConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $TauriRoot "tauri.conf.json") | ConvertFrom-Json
 $ProductName = [string]$TauriConfig.productName
 $SidecarSpec = Join-Path $PrototypeRoot "jb_hwp_backend.spec"
 $SidecarBinDir = Join-Path $TauriRoot "binaries"
@@ -75,7 +75,7 @@ if (-not (Test-Path -LiteralPath $SigningPublicKeyPath)) {
     throw "자동 업데이트 서명 공개키를 찾지 못했습니다: $SigningPublicKeyPath"
 }
 $SigningPublicKey = (Get-Content -Raw -LiteralPath $SigningPublicKeyPath).Trim()
-$UpdateConfig = Get-Content -Raw -LiteralPath (Join-Path $PrototypeRoot "update-config.json") | ConvertFrom-Json
+$UpdateConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $PrototypeRoot "update-config.json") | ConvertFrom-Json
 if ($SigningPublicKey -ne [string]$UpdateConfig.app.public_key) {
     throw "서명 공개키와 update-config.json의 공개키가 다릅니다."
 }
@@ -92,7 +92,7 @@ $VersionFiles = @(
     @{ Path = "backend\full_features.py"; Pattern = [regex]::Escape("APP_VERSION = `"$DisplayVersion`"") }
 )
 foreach ($Item in $VersionFiles) {
-    if (-not (Select-String -LiteralPath $Item.Path -Pattern $Item.Pattern -Quiet)) {
+    if (-not (Select-String -LiteralPath $Item.Path -Pattern $Item.Pattern -Encoding UTF8 -Quiet)) {
         throw "버전 불일치: $($Item.Path)"
     }
 }

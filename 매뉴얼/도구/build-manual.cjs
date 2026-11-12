@@ -3,6 +3,8 @@ const path = require('node:path');
 const os = require('node:os');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const assert = require('node:assert/strict');
+const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '../..');
@@ -26,6 +28,9 @@ const tracked = [
   'src/jb_quickpanel/features/registry.py', 'config/config.json',
   'config/kedufine_forms.json', '매뉴얼/원본/content.json', '매뉴얼/원본/manual.css',
   '매뉴얼/원본/manual.js', '매뉴얼/원본/fixture.py', '매뉴얼/도구/build-manual.cjs',
+  '매뉴얼/원본/practice.js', '매뉴얼/원본/practice-app.js',
+  '매뉴얼/원본/practice-coach.js', '매뉴얼/원본/practice-coach.css', '매뉴얼/원본/reader-theme.css',
+  '매뉴얼/도구/verify-practice.cjs',
   'tauri-prototype/CHANGELOG.md', 'tauri-prototype/src-tauri/src/lib.rs',
   'tauri-prototype/src-tauri/tauri.conf.json',
   'tauri-prototype/src-tauri/src/window_layout.rs',
@@ -73,8 +78,12 @@ function playwrightModule() {
 }
 const escape = (value) => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 function imageBlock(name, caption) {
-  const encoded = fs.readFileSync(path.join(manual, 'assets', `${name}.png`)).toString('base64');
-  return `<figure><button class="screen-button" type="button" aria-label="${escape(caption)} 확대"><img src="data:image/png;base64,${encoded}" alt="${escape(caption)}"></button><figcaption>${escape(caption)} <span class="screen-only">· 클릭하여 확대</span></figcaption></figure>`;
+  const png = fs.readFileSync(path.join(manual, 'assets', `${name}.png`));
+  // Capture screenshots at 2x density; size previews from their CSS dimensions.
+  const width = png.readUInt32BE(16) / 2;
+  const height = png.readUInt32BE(20) / 2;
+  const sizing = `--capture-width:${width}px;--capture-ratio:${width / height}`;
+  return `<figure style="${sizing}"><button class="screen-button" type="button" aria-label="${escape(caption)} 확대"><img src="data:image/png;base64,${png.toString('base64')}" alt="${escape(caption)}"></button><figcaption>${escape(caption)} <span class="screen-only">· 클릭하여 확대</span></figcaption></figure>`;
 }
 function bulletList(items) {
   return `<ul class="bullets">${items.map((item) => `<li>${escape(item)}</li>`).join('')}</ul>`;
@@ -82,10 +91,10 @@ function bulletList(items) {
 function renderBlock(block, fixture) {
   switch (block.type) {
     case 'paragraph': return `<p>${escape(block.text)}</p>`;
-    case 'note': return `<aside class="note"><strong>${escape(block.title)}</strong>${block.items ? bulletList(block.items) : `<p>${escape(block.text)}</p>`}</aside>`;
+    case 'note': return `<aside class="note">${block.title ? `<strong>${escape(block.title)}</strong>` : ''}${block.items ? bulletList(block.items) : `<p>${escape(block.text)}</p>`}</aside>`;
     case 'bullets': return `${block.title ? `<h3>${escape(block.title)}</h3>` : ''}${bulletList(block.items)}`;
     case 'example': return `<div class="example"><h3>${escape(block.title)}</h3><pre>${escape(block.text)}</pre></div>`;
-    case 'steps': return `${block.title ? `<h3>${escape(block.title)}</h3>` : ''}<ol class="steps">${block.items.map((item, index) => `<li><span class="step-label">${index + 1}단계</span><span>${escape(item)}</span></li>`).join('')}</ol>`;
+    case 'steps': return `${block.title ? `<h3>${escape(block.title)}</h3>` : ''}<ol class="steps">${block.items.map((item, index) => `<li><span class="step-label">${index + (block.start || 1)}단계</span><span>${escape(item)}</span></li>`).join('')}</ol>`;
     case 'table': return `<div class="table-wrap"><table><thead><tr>${block.headers.map((cell) => `<th scope="col">${escape(cell)}</th>`).join('')}</tr></thead><tbody>${block.rows.map((row) => `<tr>${row.map((cell) => `<td>${escape(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
     case 'image': return imageBlock(block.image, block.caption);
     case 'catalog': return `<h3>${escape(block.title)}</h3><ul class="catalog">${fixture.table_catalog.items.map((item) => `<li>${escape(item.title)}</li>`).join('')}</ul>`;
@@ -94,15 +103,10 @@ function renderBlock(block, fixture) {
   }
 }
 function chapterGroups(section) {
-  const groups = [];
+  const groups = [{ blocks: [] }];
   for (const block of section.blocks) {
     if (block.type === 'subsection') { groups.push({ ...block, blocks: [...block.blocks] }); continue; }
-    if (block.title && ['steps', 'bullets'].includes(block.type)) {
-      groups.push({ title: block.title, blocks: [{ ...block, title: undefined }] });
-    } else {
-      if (!groups.length) groups.push({ blocks: [] });
-      groups[groups.length - 1].blocks.push(block);
-    }
+    groups[0].blocks.push(block);
   }
   return groups;
 }
@@ -114,23 +118,129 @@ function renderChapterBlocks(section, index, fixture) {
     return `<section class="subsection" aria-labelledby="${section.id}-sub-${subsection}"><h3 id="${section.id}-sub-${subsection}"><span class="subsection-number">${number}</span>${escape(group.title)}</h3>${group.path ? `<p class="control-path">${escape(group.path)}</p>` : ''}${group.blocks.map((block) => renderBlock(block, fixture)).join('')}</section>`;
   }).join('');
 }
+function readerBlockUnits(block, fixture) {
+  if (block.type === 'table') {
+    const heading = block.title || (block.headers.includes('일반 한글') ? '모드별 사용 범위'
+      : block.headers[0] === '버튼' ? '버튼별 적용 결과'
+      : block.headers[0] === '선택 방식' ? '선택한 범위'
+      : block.headers[0] === '등록 위치' ? '등록할 위치'
+      : block.headers[0] === '설정' || block.headers[0] === '항목' ? '설정 항목'
+      : block.headers.includes('차이') ? '적용 방식의 차이' : '선택 옵션');
+    return ['<h3>' + escape(heading) + '</h3>' + renderBlock(block, fixture)];
+  }
+  if (block.type === 'catalog') return readerBlockUnits({
+    type: 'bullets', title: block.title, items: fixture.table_catalog.items.map(({ title }) => title),
+  }, fixture);
+  if (block.type === 'faq') return block.items.flatMap(([title, answer]) =>
+    (Array.isArray(answer) ? answer : [answer]).map((item, index) =>
+      renderBlock({ type: 'bullets', title: index ? undefined : title, items: [item] }, fixture)));
+  if (['steps', 'bullets', 'note'].includes(block.type) && block.items) {
+    return [renderBlock({ ...block, title: block.title || (block.type === 'steps' ? '실행 순서' : '확인할 점') }, fixture)];
+  }
+  if (block.type === 'example' && block.text.split('\n').length > 8) {
+    const lines = block.text.split('\n');
+    return Array.from({ length: Math.ceil(lines.length / 6) }, (_, index) =>
+      renderBlock({ ...block, text: lines.slice(index * 6, index * 6 + 6).join('\n') }, fixture));
+  }
+  return [renderBlock(block, fixture)];
+}
+function renderReader(fixture, logo, pdf) {
+  const practices = {
+    quick: 'auto', auto: 'direct', start: 'arrange', 'auto-settings-1': 'profile',
+    'auto-settings-2': 'title', 'auto-settings-3': 'type', 'manual-style': 'insert-style',
+    'table-1': 'table', 'table-2': 'images', 'cell-1': 'cell-clean', 'cell-2': 'cell-replace', 'cell-3': 'cell',
+    'text-1': 'font', 'text-2': 'spacing', 'text-3': 'script',
+    characters: 'character', 'characters-1': 'compose', 'characters-2': 'user-character', symbols: 'symbol', 'symbols-2': 'favorite',
+    'forms-1': 'hwp-form', 'forms-2': 'draft', pages: 'paper',
+  };
+  const topics = content.sections.flatMap((section, index) => {
+    let sub = 0;
+    const number = index + 1;
+    const groups = chapterGroups(section);
+    return groups.map((group, groupIndex) => {
+      const part = group.title ? ++sub : 0;
+      const id = part ? `${section.id}-${part}` : section.id;
+      const practice = practices[id];
+      let units = [
+        ...(groupIndex === 0 && section.image ? [imageBlock(section.image, `${section.title} 화면`)] : []),
+        ...group.blocks.flatMap((block) => readerBlockUnits(block, fixture)),
+      ];
+      if (!part && groups.length > 1) {
+        let child = 0;
+        units.push('<div class="reader-topic-list"><h3>세부 기능</h3>' + groups.filter((group) => group.title).map((group) =>
+          `<a href="#${section.id}-${++child}" data-reader-link><b>${number}.${child}</b><span>${escape(group.title)}</span><span aria-hidden="true">→</span></a>`).join('') + '</div>');
+      }
+      if (section.id === 'help') units = section.blocks.flatMap((block) => block.type === 'faq'
+        ? block.items.map(([question, answers], index) => `<div data-help-index="${index}">${renderBlock({ type: 'steps', title: '해결 순서', items: answers }, fixture)}</div>`)
+        : [`<div data-help-index="10">${renderBlock(block, fixture)}</div>`]);
+      return `<article data-topic="${id}" data-chapter="${section.id}" data-number="${number}${part ? `.${part}` : ''}" data-title="${escape(group.title || section.title)}" data-label="${escape(section.title)}" data-path="${escape(group.path || section.lead)}" data-practice="${practice || ''}">
+        ${units.map((unit) => `<div class="reader-unit">${unit}</div>`).join('')}
+      </article>`;
+    });
+  }).join('');
+  const options = content.sections.map((section, index) => `<option value="${section.id}">${index + 1}. ${escape(section.title)}</option>`).join('');
+  return `<div class="reader screen-only">
+    <header class="reader-bar">
+      <a class="reader-brand" href="#start"><img src="data:image/x-icon;base64,${logo}" width="30" height="30" alt=""><span><strong>JB에듀 폼</strong><small>사용자 매뉴얼 · v.${version}</small></span></a>
+      <input id="reader-search" type="search" aria-label="매뉴얼 검색" placeholder="기능·증상 검색">
+      <div class="reader-actions"><button type="button" class="reader-contact-open" aria-haspopup="dialog">문의</button><a class="button" href="${escape(pdf)}" download>PDF 다운로드</a></div>
+    </header>
+    <div class="reader-frame">
+      <aside class="reader-sidebar"><h2>사용 안내</h2><nav id="reader-outline" class="reader-outline" aria-label="매뉴얼 목차"></nav>${renderContact()}</aside>
+      <main class="reader-main" aria-labelledby="reader-title">
+        <div class="reader-selects"><select id="reader-chapter" aria-label="장 선택">${options}</select><select id="reader-topic" aria-label="소항목 선택"></select><select id="reader-symptom" aria-label="겪고 있는 증상 선택" hidden>${content.sections.find(({ id }) => id === 'help').blocks.find(({ type }) => type === 'faq').items.map(([question], index) => `<option value="${index}">${escape(question)}</option>`).join('')}<option value="10">그래도 해결되지 않으면</option></select></div>
+        <header class="reader-heading"><div><div id="reader-section"></div><h1 id="reader-title" tabindex="-1"></h1><p id="reader-path"></p></div><button type="button" id="reader-practice" class="primary-button" aria-haspopup="dialog" hidden>직접 해보기</button></header>
+        <div class="reader-content" id="reader-content"></div>
+        <footer class="reader-footer"><button id="reader-prev" type="button">← 이전</button><span id="reader-page" role="status"></span><button id="reader-next" type="button">다음 →</button></footer>
+      </main>
+    </div>
+  </div><template id="reader-topics">${topics}</template>
+  <dialog id="reader-contact-dialog" aria-labelledby="reader-contact-title"><div class="zoom-head"><strong id="reader-contact-title">문의</strong><button id="reader-contact-close" type="button">닫기</button></div>${renderContact()}</dialog>`;
+}
+function renderContact() {
+  return '<aside class="reader-contact" aria-label="문의처"><strong>문의</strong><p>전북특별자치도교육청<br>정책기획과 빅데이터팀</p><a href="tel:0632393176">063-239-3176</a></aside>';
+}
+function renderPracticeApp(fixture) {
+  const index = fs.readFileSync(path.join(app, 'dist/index.html'), 'utf8');
+  const script = index.match(/src="(\/assets\/[^"]+\.js)"/)?.[1];
+  const sheet = index.match(/href="(\/assets\/[^"]+\.css)"/)?.[1];
+  if (!script || !sheet) throw Error('Build the frontend before generating practice screens');
+  const js = fs.readFileSync(path.join(app, 'dist', script), 'utf8').replace(/<\/script/gi, '<\\/script');
+  const css = fs.readFileSync(path.join(app, 'dist', sheet), 'utf8');
+  const bridge = fs.readFileSync(path.join(manual, 'practice-app.js'), 'utf8');
+  const coach = fs.readFileSync(path.join(manual, 'practice-coach.js'), 'utf8');
+  const coachCss = fs.readFileSync(path.join(manual, 'practice-coach.css'), 'utf8');
+  const data = JSON.stringify(fixture).replace(/</g, '\\u003c');
+  const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'"><style>${css}\n${coachCss}</style></head><body><div id="root"></div><script>${coach}\n${bridge};startPracticeApp(${data});</script><script type="module">${js}</script></body></html>`;
+  const forms = fixture.kedufine_form_catalog.items;
+  return `<script type="application/json" id="practice-app-html">${JSON.stringify(Buffer.from(html).toString('base64'))}</script>
+    <script type="application/json" id="practice-catalogs">${JSON.stringify({
+      forms, styles: fixture.style_catalog.items, pages: fixture.page_catalog.items,
+      symbols: fixture.picture_symbol_catalog.groups,
+      samples: ['가로조합형.jpg', '집약조합형.jpg'].map((name) =>
+        `data:image/jpeg;base64,${fs.readFileSync(path.join(root, 'symbols/비전', name)).toString('base64')}`),
+    }).replace(/</g, '\\u003c')}</script>`;
+}
 function render(fixture, options = {}) {
   const pdf = options.pdfName || `JBEdu_FORM_사용자매뉴얼_v.${version}.pdf`;
   const logo = fs.readFileSync(path.join(app, 'src-tauri/icons/icon.ico')).toString('base64');
-  const groups = [...new Set(content.sections.map((section) => section.group))];
-  const groupLinks = groups.map((name) => `<a href="#${content.sections.find((section) => section.group === name).id}" data-group="${escape(name)}">${escape(name)}</a>`).join('');
-  let group = '';
-  const links = content.sections.map((section) => {
-    const heading = group === section.group ? '' : `<div class="nav-group">${escape(section.group)}</div>`;
-    group = section.group;
-    return `${heading}<a href="#${section.id}"><span class="nav-number">${String(content.sections.indexOf(section) + 1).padStart(2, '0')}</span><span>${escape(section.title)}</span></a>`;
-  }).join('');
-  const body = content.sections.map((section, index) => `<section class="chapter" id="${section.id}" data-group="${escape(section.group)}"><span class="chapter-group screen-only">${escape(section.group)}</span><div class="chapter-heading"><span class="chapter-number">${String(index + 1).padStart(2, '0')}</span><h2>${escape(section.title)}</h2></div><p class="lead">${escape(section.lead)}</p>${section.image ? imageBlock(section.image, `${section.title} 화면`) : ''}${renderChapterBlocks(section, index, fixture)}</section>`).join('\n');
-  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="JBEdu FORM (JB에듀 폼) 사용자 매뉴얼"><title>${escape(content.title)} ${escape(content.subtitle)}</title><style>${fs.readFileSync(path.join(manual, 'manual.css'), 'utf8')}</style></head><body>
-  <a href="#main" class="skip-link">본문 바로가기</a><div class="meta-strip"><div><span>사용자 매뉴얼</span></div></div><header class="site-header"><div class="topbar"><a class="brand" href="#overview"><img src="data:image/x-icon;base64,${logo}" width="36" height="36" alt=""><span><strong>${escape(content.title)}</strong><small>${escape(content.subtitle)}</small></span></a><button id="menu-toggle" class="mobile-menu" aria-expanded="false" aria-controls="manual-nav">목차</button><nav class="section-nav" aria-label="주요 영역">${groupLinks}</nav></div></header>
-  <section class="intro" id="overview" aria-label="매뉴얼 안내"><div class="intro-inner"><div class="intro-content"><div class="intro-meta"><span>사용자 매뉴얼</span><span>v.${version}</span></div><h1>${escape(content.title)}</h1><p>일반 한글 · K-에듀파인 기안창 사용 안내</p><label class="search-wrap screen-only"><input id="manual-search" type="search" placeholder="기능·증상으로 찾기 (예: 자동 서식, 셀 정리)" aria-label="매뉴얼 검색"><button id="clear-search" type="button" aria-label="검색어 지우기" hidden>×</button></label><p id="search-status" role="status" aria-live="polite"></p></div><div class="intro-actions screen-only"><span>매뉴얼 내려받기</span><a class="button primary-button" href="${escape(pdf)}" download>PDF 다운로드</a><button id="print-manual" type="button">매뉴얼 인쇄</button></div><div class="quick-links"><a href="#quick"><strong>빠른 시작</strong><span>AI 초안 자동 서식 →</span></a><a href="#cell"><strong>표 편집</strong><span>셀 내용 정리 →</span></a><a href="#settings"><strong>설정 관리</strong><span>백업·복원 →</span></a><a href="#help"><strong>도움말</strong><span>문제 해결 →</span></a></div><div class="print-only"><h2 class="print-toc-title">목차</h2><ol class="print-toc">${content.sections.map((section) => `<li><a href="#${section.id}">${escape(section.title)}</a></li>`).join('')}</ol></div></div></section>
-  <div class="layout"><nav class="sidebar" id="manual-nav" aria-label="매뉴얼 목차"><div class="sidebar-title">전체 목차 <span>${content.sections.length}</span></div>${links}</nav><main id="main">${body}<footer>${escape(content.title)} 사용자 매뉴얼</footer></main></div>
-  <dialog id="image-zoom" aria-labelledby="zoom-label"><div class="zoom-head"><strong id="zoom-label"></strong><button id="zoom-close" type="button">닫기</button></div><img id="zoom-image" alt="확대한 프로그램 화면"></dialog><script>${fs.readFileSync(path.join(manual, 'manual.js'), 'utf8')}</script></body></html>`;
+  const body = content.sections.map((section, index) => `<section class="chapter" id="${section.id}"><div class="chapter-heading"><span class="chapter-number">${String(index + 1).padStart(2, '0')}</span><h2>${escape(section.title)}</h2></div><p class="lead">${escape(section.lead)}</p>${section.image ? imageBlock(section.image, `${section.title} 화면`) : ''}${renderChapterBlocks(section, index, fixture)}</section>`).join('\n');
+  const font = fs.readFileSync(path.join(manual, 'assets/SUIT-Variable.woff2')).toString('base64');
+  const license = fs.readFileSync(path.join(manual, 'assets/SUIT-OFL.txt'), 'utf8');
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="JBEdu FORM (JB에듀 폼) 사용자 매뉴얼"><title>${escape(content.title)} ${escape(content.subtitle)}</title><!-- SUIT font license\n${license} --><style>@font-face{font-family:SUIT;src:url(data:font/woff2;base64,${font}) format('woff2');font-weight:100 900;font-style:normal;font-display:swap}\n${fs.readFileSync(path.join(manual, 'manual.css'), 'utf8')}\n${fs.readFileSync(path.join(manual, 'reader-theme.css'), 'utf8')}\n${fs.readFileSync(path.join(manual, 'practice-coach.css'), 'utf8')}</style></head><body>
+  ${renderReader(fixture, logo, pdf)}
+  <div class="print-only"><section class="intro"><div class="intro-inner"><div class="intro-meta"><span>사용자 매뉴얼</span><span>v.${version}</span></div><h1>${escape(content.title)}</h1><p>일반 한글 · K-에듀파인 기안창 사용 안내</p><h2 class="print-toc-title">목차</h2><ol class="print-toc">${content.sections.map((section) => `<li><a href="#${section.id}">${escape(section.title)}</a></li>`).join('')}</ol></div></section><main>${body}</main></div>
+  <dialog id="practice-dialog" class="practice screen-only" aria-labelledby="practice-title">
+    <header class="practice-heading"><h2 id="practice-title"></h2><div><button id="practice-reset" type="button">다시 해보기</button><button id="practice-close" type="button">닫기</button></div></header>
+    <div id="practice-guide" role="status" aria-live="polite"></div>
+    <nav class="practice-view-switch" aria-label="체험 화면"><button type="button" data-practice-view="document" aria-pressed="true">한글 문서</button><button type="button" data-practice-view="app" aria-pressed="false">JB에듀 폼</button></nav>
+    <div class="practice-stage">
+      <div id="practice-document"></div>
+      <div id="practice-app-window"><div class="practice-titlebar">JBEdu FORM (JB에듀 폼)</div><div id="practice-app-mount"></div></div>
+    </div>
+  </dialog>
+  ${renderPracticeApp(fixture)}
+  <dialog id="image-zoom" aria-labelledby="zoom-label"><div class="zoom-head"><strong id="zoom-label"></strong><button id="zoom-close" type="button">닫기</button></div><img id="zoom-image" alt="확대한 프로그램 화면"></dialog><script>${fs.readFileSync(path.join(manual, 'practice-coach.js'), 'utf8')}</script><script>${fs.readFileSync(path.join(manual, 'manual.js'), 'utf8')}</script><script>${fs.readFileSync(path.join(manual, 'practice.js'), 'utf8')}</script></body></html>`;
 }
 function stageInstallResources(html, pdfPath, changelogPath, bundleRoot) {
   const manualDir = path.join(bundleRoot, 'manual');
@@ -140,6 +250,86 @@ function stageInstallResources(html, pdfPath, changelogPath, bundleRoot) {
   fs.writeFileSync(path.join(manualDir, 'index.html'), html);
   fs.copyFileSync(pdfPath, path.join(manualDir, 'manual.pdf'));
   fs.copyFileSync(changelogPath, path.join(supportDir, 'CHANGELOG.md'));
+}
+async function verifyManual(browser, htmlPath, installedPath, pdfPath) {
+  const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  try {
+    await page.goto(pathToFileURL(htmlPath).href);
+    await page.evaluate(() => document.fonts.ready);
+    assert.equal(await page.evaluate(() => topic.dataset.topic), 'start');
+    await page.locator('#reader-outline a[href="#quick"]').click();
+    await page.locator('.reader-brand').click();
+    assert.equal(await page.evaluate(() => topic.dataset.topic), 'start');
+    assert.ok(await page.evaluate(() => document.fonts.check('17px SUIT')));
+    assert.equal(await page.locator('.reader-sidebar .reader-contact a').innerText(), '063-239-3176');
+    const hierarchy = await page.evaluate(() => topics.map(({ dataset }) => ({ id: dataset.topic, number: dataset.number, chapter: dataset.chapter })));
+    assert.equal(hierarchy.filter(({ number }) => !number.includes('.')).length, content.sections.length);
+    for (const section of content.sections) assert.ok(hierarchy.some(({ id }) => id === section.id), section.id);
+    assert.ok(!hierarchy.some(({ id }) => /^help-\d|^start-\d/.test(id)));
+    await page.locator('#reader-outline a[href="#pages"]').click();
+    assert.equal(await page.evaluate(() => topic.dataset.topic), 'pages');
+    await page.goBack();
+    assert.equal(await page.evaluate(() => topic.dataset.topic), 'start');
+    await page.locator('#reader-search').fill('no-match-123');
+    assert.equal(await page.locator('#reader-title').innerText(), '검색 결과 없음');
+    await page.locator('#reader-search').fill('');
+    await page.emulateMedia({ media: 'print' });
+    assert.equal(await page.locator('.chapter:visible').count(), content.sections.length);
+    await page.emulateMedia({ media: 'screen' });
+    for (const file of [htmlPath, installedPath]) {
+      await page.goto(pathToFileURL(file).href + '#auto');
+      const [download] = await Promise.all([
+        page.waitForEvent('download'), page.getByRole('link', { name: 'PDF 다운로드' }).click(),
+      ]);
+      assert.deepEqual(fs.readFileSync(await download.path()), fs.readFileSync(pdfPath));
+    }
+    for (const viewport of [{ width: 1366, height: 768 }, { width: 901, height: 701 },
+      { width: 1024, height: 600 }, { width: 390, height: 844 }, { width: 320, height: 480 }]) {
+      await page.setViewportSize(viewport);
+      const overflow = await page.evaluate(() => {
+        const failures = [];
+        const sidebar = document.querySelector('.reader-sidebar');
+        for (const target of topics) {
+          showTopic(target);
+          if (new Set(pages.flat().map((unit) => unit.dataset.sourceUnit)).size !== topicUnits().length) failures.push('lost units: ' + target.dataset.topic);
+          if (sidebar.clientHeight && sidebar.scrollHeight > sidebar.clientHeight + 1) failures.push('sidebar: ' + target.dataset.topic);
+          for (pageIndex = 0; pageIndex < pages.length; pageIndex++) {
+            renderPage();
+            if (readArea.scrollHeight > readArea.clientHeight + 1 || readArea.scrollWidth > readArea.clientWidth + 1) {
+              failures.push(target.dataset.topic + ' page ' + (pageIndex + 1));
+            }
+            for (const frame of readArea.querySelectorAll('figure')) {
+              const image = frame.querySelector('img').getBoundingClientRect();
+              const width = parseFloat(frame.style.getPropertyValue('--capture-width'));
+              const ratio = parseFloat(frame.style.getPropertyValue('--capture-ratio'));
+              if (image.width > width + 1 || Math.abs(image.width / ratio - image.height) > 1) failures.push('image sizing: ' + target.dataset.topic);
+            }
+          }
+        }
+        showTopic(topics.find((item) => item.dataset.topic === 'help'));
+        for (symptomIndex = 0; symptomIndex < 11; symptomIndex++) {
+          symptom.value = String(symptomIndex);
+          title.textContent = symptom.selectedOptions[0].textContent;
+          pages = [];
+          paginate();
+          for (pageIndex = 0; pageIndex < pages.length; pageIndex++) {
+            renderPage();
+            if (readArea.scrollHeight > readArea.clientHeight + 1) failures.push('help symptom ' + symptomIndex);
+          }
+        }
+        if (document.documentElement.scrollWidth > innerWidth || document.documentElement.scrollHeight > innerHeight) failures.push('viewport');
+        return failures;
+      });
+      assert.deepEqual(overflow, [], 'Manual overflow at ' + viewport.width + 'x' + viewport.height);
+    }
+    assert.deepEqual(errors, []);
+    await require('./verify-practice.cjs').verifyPractice(browser, htmlPath);
+    console.log('Manual verified: topic navigation, scroll-free pages, real-frontend practice, print and PDF downloads.');
+  } finally {
+    await page.close();
+  }
 }
 async function captureScreens(browser, url, fixture) {
   const page = await browser.newPage({ viewport: { width: 620, height: 1000 }, deviceScaleFactor: 2 });
@@ -294,6 +484,7 @@ async function captureScreens(browser, url, fixture) {
   }
   await page.setViewportSize({ width: 620, height: 1000 });
   await save('auto', '.auto-format-group', 310);
+  await save('direct-auto', '.direct-auto-format-grid', 180);
   await save('manual-style', '.content-card-grid', 330);
   await page.getByRole('button', { name: '서식 설정', exact: true }).click();
   await save('auto-settings', '.auto-format-settings-modal', 250);
@@ -485,7 +676,7 @@ async function main() {
     fs.writeFileSync(path.join(output, htmlName), render(fixture));
     const pdfName = `JBEdu_FORM_사용자매뉴얼_v.${version}.pdf`;
     const page = await browser.newPage();
-    await page.goto(require('node:url').pathToFileURL(path.join(output, htmlName)).href);
+    await page.goto(pathToFileURL(path.join(output, htmlName)).href);
     await page.evaluate(async () => { await document.fonts.ready; await Promise.all([...document.images].filter((img) => img.getAttribute('src')).map((img) => img.decode())); });
     await page.pdf({ path: path.join(output, pdfName), format: 'A4', printBackground: true, displayHeaderFooter: true,
       headerTemplate: '<span></span>', footerTemplate: '<div style="width:100%;text-align:center;font-size:8px;color:#626977;font-family:Arial"><span class="pageNumber"></span> / <span class="totalPages"></span></div>',
@@ -493,6 +684,8 @@ async function main() {
     await page.close();
     stageInstallResources(render(fixture, { pdfName: 'manual.pdf' }), path.join(output, pdfName),
       path.join(app, 'CHANGELOG.md'), path.join(app, 'src-tauri'));
+    await verifyManual(browser, path.join(output, htmlName), path.join(app, 'src-tauri/manual/index.html'),
+      path.join(output, pdfName));
     if (process.argv.includes('--reviewed')) {
       fs.writeFileSync(path.join(manual, 'review.json'), JSON.stringify({ version, files: fingerprints() }, null, 2) + '\n');
     }

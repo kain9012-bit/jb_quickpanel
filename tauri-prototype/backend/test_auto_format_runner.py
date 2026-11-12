@@ -1,6 +1,7 @@
 import unittest
 import tempfile
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 
 from backend.server import _auto_title_template_records
@@ -28,9 +29,14 @@ class FakeAutoFormatBridge:
         self.calls.append(("get_selected_text",))
         return True, self.selected_text
 
-    def inspect_selected_report_content(self):
+    def inspect_selected_report_content(self, *, paragraphs_for_tables_only):
         self.calls.append(("inspect",))
+        if not paragraphs_for_tables_only:
+            raise AssertionError("Auto format should scan paragraph positions only for native tables")
         return self.inspection
+
+    def auto_format_paragraph(self):
+        return nullcontext()
 
     def delete_selection(self):
         self.calls.append(("delete_selection",))
@@ -157,7 +163,7 @@ class AutoFormatRunnerTests(unittest.TestCase):
 
     def test_inspection_exception_stops_before_any_document_changes(self):
         bridge = FakeAutoFormatBridge("(본문) 내용")
-        def fail():
+        def fail(**_options):
             raise RuntimeError("scan unavailable")
         bridge.inspect_selected_report_content = fail
         ok, message, _ = run_auto_format(bridge, _auto_title_template_records(), cancelled=lambda: False)

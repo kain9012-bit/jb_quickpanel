@@ -36,7 +36,7 @@ from src.jb_quickpanel.services.user_backup import (
     restore_user_backup,
 )
 
-APP_VERSION = "v.0.0.7"
+APP_VERSION = "v.0.0.8"
 APP_TITLE = app_config.APP_TITLE
 
 _FALLBACK_FONT_FAMILIES = ("HY헤드라인M", "휴먼명조", "맑은 고딕", "굴림체")

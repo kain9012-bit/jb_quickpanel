@@ -2,7 +2,7 @@ import unittest
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from src.jb_quickpanel.bridges.hwp_bridge import HwpBridge
 
@@ -179,6 +179,14 @@ class SelectedReportInspectionTests(unittest.TestCase):
                 self.assertTrue(ok)
                 self.assertEqual(data["native_object_positions"], positions)
                 self.assertEqual(data["controls_complete"], complete)
+                hwp.InitScan = Mock(side_effect=AssertionError("unnecessary paragraph scan"))
+                hwp.SelectText = Mock()
+                ok, fast_data = bridge.inspect_selected_report_content(paragraphs_for_tables_only=True)
+                self.assertTrue(ok)
+                self.assertEqual(fast_data, data)
+                hwp.InitScan.assert_not_called()
+                hwp.SelectText.assert_not_called()
+                hwp.InitScan = lambda *_args: True
                 bridge._restore_selected_report_range = lambda _range: False
                 self.assertFalse(bridge.inspect_selected_report_content()[0])
 
@@ -208,6 +216,30 @@ class SelectedReportInspectionTests(unittest.TestCase):
         ), patch.object(bridge, "connect_without_focus") as connect:
             self.assertFalse(bridge.ensure()[0])
             connect.assert_not_called()
+
+    def test_paragraph_reuses_window_check_but_not_document_check(self):
+        bridge = HwpBridge()
+        bridge.hwp = object()
+        check_document = Mock()
+        transaction = SimpleNamespace(hwp=bridge.hwp, _check_document=check_document, commit=Mock())
+        bridge._auto_format_transaction = transaction
+        with patch(
+            "src.jb_quickpanel.bridges.hwp_bridge.hwp_connection_matches_visible_target",
+            return_value=True,
+        ) as match:
+            with bridge.auto_format_paragraph():
+                self.assertTrue(bridge.ensure()[0])
+                self.assertTrue(bridge.ensure()[0])
+                match.assert_called_once_with(bridge.hwp)
+                self.assertEqual(check_document.call_count, 3)
+                check_document.side_effect = RuntimeError("document changed")
+                self.assertFalse(bridge.ensure()[0])
+
+            check_document.side_effect = None
+            match.return_value = False
+            self.assertFalse(bridge.commit_auto_format_rewrite(transaction)[0])
+            self.assertEqual(match.call_count, 2)
+            transaction.commit.assert_not_called()
 
     def test_collects_following_paragraph_status_and_native_table_anchor(self):
         class PosSet:
@@ -267,7 +299,7 @@ class SelectedReportInspectionTests(unittest.TestCase):
         fake = FakeHwp()
         bridge = HwpBridge()
         bridge.hwp = fake
-        ok, data = bridge.inspect_selected_report_content()
+        ok, data = bridge.inspect_selected_report_content(paragraphs_for_tables_only=True)
         self.assertTrue(ok)
         self.assertEqual([item["text"] for item in data["paragraphs"]], ["첫 문단", "둘째 문단"])
         self.assertEqual(data["native_table_positions"], [(0, 2, 0)])

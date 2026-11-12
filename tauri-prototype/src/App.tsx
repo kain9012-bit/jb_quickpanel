@@ -97,7 +97,7 @@ type KedufineCategory = "internal" | "outgoing" | "legacy";
 type KedufineForm = { key: string; id: string; title: string; category: KedufineCategory; preview: string; body: string; user_item: boolean; legacy: boolean };
 type KedufineFormDraft = { id?: string; title: string; category: "internal" | "outgoing"; body: string };
 
-const VERSION = "v.0.0.7";
+const VERSION = "v.0.0.8";
 const MAX_AUTO_FORMAT_PROFILES = 10;
 
 const DEFAULT_MARGINS: PageMargins = {

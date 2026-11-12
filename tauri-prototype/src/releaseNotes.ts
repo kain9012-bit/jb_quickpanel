@@ -15,6 +15,11 @@ export type ReleaseNote = {
  */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.0.8",
+    added: [],
+    changed: [{ tool: "서식 자동 지정", items: ["시작 전 검사와 문단별 적용 중 반복 작업을 줄여 속도 개선", "그림·도형 및 원문 보호 유지"] }],
+  },
+  {
     version: "0.0.7",
     added: [],
     changed: [{ tool: "셀 정리", items: ["앞뒤 공백 정리·셀마다 문자 붙이기에서 기존 굵기·글자색·줄바꿈 유지", "공백만 삭제하거나 앞뒤에만 삽입하도록 개선, 기존 셀 선택·찾아바꾸기는 유지"] }],
